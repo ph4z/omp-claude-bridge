@@ -114,6 +114,8 @@ Both windows stay in the picker regardless of this setting (wherever a runtime e
 
 ### Windows offered per model
 
+Models with **measured** Claude Code runtime behavior expand into one picker entry per available window:
+
 | Model | 200K entry | 1M entry | `auto` default |
 | ----- | :--------: | :------: | :------------: |
 | `claude-opus-4-8` | ✓ | ✓ | 1M |
@@ -129,26 +131,39 @@ Both windows stay in the picker regardless of this setting (wherever a runtime e
 
 The suffixed alternate exists only for the window that isn't the default — e.g. under `auto` you get `claude-opus-4-8` (1M) + `claude-opus-4-8-200k`, and under `"200k"` you get `claude-opus-4-8` (200K) + `claude-opus-4-8-1m`.
 
+**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. Fable 5.1, Opus 5) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged and the registered window mirrors OMP's catalogue (clamped down, never up, by a forced mode). The bridge never fabricates a `[1m]` request or a forced-200K variant for a model it hasn't measured.
+
 > Forcing 1M is a *request*: some models may still be **served** 200K by your subscription entitlement. Set `CLAUDE_BRIDGE_DEBUG=1` to log the served window (see [Debugging](#debugging)).
 
 > An invalid `contextWindow` value logs a warning and falls back to `"auto"`, so a typo never breaks startup.
 
 ## Models
 
-Pick any of these from `/model` — each entry shows a `(1M)` or `(200K)` label. The exact ids below assume the default `contextWindow: "auto"`; which id is unsuffixed vs `-1m` / `-200k` follows your configured [default window](#default-window).
+The picker is **discovered dynamically from OMP's Anthropic model catalogue** — there is no hard-coded model list to update when Anthropic ships a new revision. The bridge:
+
+1. reads OMP's Anthropic catalogue at startup (synchronously, no network);
+2. keeps entries from the validated Claude families — **fable**, **opus**, **sonnet**, **haiku** — at or above each family's validated baseline (Fable ≥ 5, Opus ≥ 4.6, Sonnet ≥ 4.6, Haiku ≥ 4.5), skipping dated snapshot ids;
+3. orders each family newest-revision-first, so a partial name like `opus` always resolves to the newest Opus;
+4. preserves the catalogue metadata (context window, max tokens, thinking/effort capabilities, input modes) and registers the result.
+
+When your installed OMP catalogue gains a new revision of a supported family (say Fable 5.2), it appears in `/model` automatically after restart — no bridge update needed. A completely new family is only added once it has been validated against the Claude Code runtime.
+
+With the current OMP catalogue and default `contextWindow: "auto"` you get, e.g.:
 
 | Picker id (auto) | Window |
 | --------- | ------ |
+| `claude-bridge/claude-fable-5-1` | 1M (catalogue, discovered) |
 | `claude-bridge/claude-fable-5` | 200K |
 | `claude-bridge/claude-fable-5-1m` | 1M |
+| `claude-bridge/claude-opus-5` | 1M (catalogue, discovered) |
 | `claude-bridge/claude-opus-4-8` | 1M |
 | `claude-bridge/claude-opus-4-8-200k` | 200K |
 | `claude-bridge/claude-opus-4-7` | 1M |
 | `claude-bridge/claude-opus-4-6` | 200K (1M on Max / Extra Usage) |
 | `claude-bridge/claude-opus-4-6-1m` | 1M |
-| `claude-bridge/claude-sonnet-5` | 1M (supports `xhigh`) |
+| `claude-bridge/claude-sonnet-5` | 1M |
 | `claude-bridge/claude-sonnet-5-200k` | 200K |
-| `claude-bridge/claude-sonnet-4-6` | 200K (supports `xhigh`) |
+| `claude-bridge/claude-sonnet-4-6` | 200K |
 | `claude-bridge/claude-sonnet-4-6-1m` | 1M |
 | `claude-bridge/claude-haiku-4-5` | 200K (cheapest) |
 
@@ -223,7 +238,7 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 
 ## How it works
 
-OMP's built-in tools are bridged to Claude Code and back, so from your side it behaves like any other OMP provider. Model routing lives in [`src/models.ts`](src/models.ts), which is deliberately free of runtime imports so the context-window policy stays unit-testable in isolation. On registration, the extension projects the pi-ai model list, applies the selected context-window policy, and registers the resulting models with OMP.
+OMP's built-in tools are bridged to Claude Code and back, so from your side it behaves like any other OMP provider. Model discovery and routing live in [`src/models.ts`](src/models.ts), which is deliberately free of runtime imports so the discovery and context-window policy stay unit-testable in isolation. On registration, the extension discovers bridge-compatible Claude models from OMP's Anthropic catalogue, applies the selected context-window policy (measured overrides for known models, catalogue windows for newly discovered ones), and registers the resulting models with OMP. The Claude Agent SDK's runtime `supportedModels()` API is intentionally not part of initial registration — OMP needs the model list synchronously at startup — but the catalogue layer is structured so a future optional runtime-validation pass can enrich it.
 
 ## Debugging
 
