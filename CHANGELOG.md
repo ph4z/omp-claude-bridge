@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Dynamic Claude model discovery from OMP's Anthropic catalogue. The picker is
+  no longer driven by a hard-coded model-id list: any revision of a validated
+  family (fable, opus, sonnet, haiku) at or above its baseline is discovered,
+  ordered newest-first, and registered with the catalogue's metadata (context
+  window, max tokens, thinking/effort capabilities). Newly shipped revisions
+  such as Fable 5.1 and Opus 5 appear automatically.
+
+### Changed
+- Models without measured Claude Code runtime behavior get a single canonical
+  picker entry: the bare id is sent to Claude Code and the registered window is
+  conservatively capped at 200K until measured; forced `1m` hides them instead
+  of claiming an unverified runtime. Measured models keep their existing
+  per-window entries and runtime overrides.
+- `resolveModel` prefers an exact id match over partial containment, so an
+  exact id never resolves to a newer revision containing it as a prefix.
+- Thinking metadata is now projected from the catalogue into registration, and
+  the effort table understands the new top `max` tier.
+- `@oh-my-pi/*` devDependencies bumped to ^18.2.2 so typecheck/tests run
+  against the same catalogue as current OMP installs (peer ranges unchanged).
+
 ## [0.8.1] - 2026-07-07
 
 ### Fixed

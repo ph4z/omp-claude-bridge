@@ -13,7 +13,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildVariantModels, buildModels, claudeCodeModelId, type ContextWindowMode, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { buildVariantModels, buildModels, claudeCodeModelId, mapReasoningToClaudeEffort, type ContextWindowMode, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -115,7 +115,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
-// MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
+// MODELS is discovered dynamically from OMP's Anthropic catalogue — see
+// buildModels in models.ts (family/revision parsing, newest-first ordering).
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false, contextWindow: "auto" };
@@ -773,11 +774,8 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 }
 
 // --- Effort level mapping ---
-// OMP reasoning levels → CC SDK effort levels
-
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
-};
+// Model-aware translation lives in models.ts so real xhigh and max tiers stay
+// distinct and the behavior is unit-testable.
 
 // --- Provider helpers: misc ---
 
@@ -1223,13 +1221,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
-	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
-	const effort = options?.reasoning
-		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[options.reasoning]
-		: undefined;
+	// OMP normally clamps options.reasoning to the registered thinking ladder.
+	// The model-aware mapper preserves a genuine xhigh tier instead of folding it
+	// into max, while retaining legacy fallback behavior where xhigh is absent.
+	const effort = mapReasoningToClaudeEffort(model, options?.reasoning);
 
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
@@ -1262,7 +1257,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			append: systemPromptAppend ? systemPromptAppend : undefined,
 		},
 		extraArgs,
-		...(effort ? { effort } : {}),
+		...(effort ? { effort: effort as EffortLevel } : {}),
 		...(settingSources ? { settingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -1474,7 +1469,7 @@ async function promptAndWait(
 
 	// Effort
 	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
+		? mapReasoningToClaudeEffort(model ?? {}, options.thinking) : undefined;
 
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1496,7 +1491,7 @@ async function promptAndWait(
 			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort } : {}),
+			...(effort ? { effort: effort as EffortLevel } : {}),
 			systemPrompt: skillsBlock
 				? { type: "preset", preset: "claude_code", append: skillsBlock }
 				: undefined,
