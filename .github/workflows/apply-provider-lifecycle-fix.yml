@@ -1,0 +1,117 @@
+name: Apply provider lifecycle fix
+
+on:
+  push:
+    branches:
+      - fix/subagent-provider-registration
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/subagent-provider-registration
+
+      - name: Patch provider ownership lifecycle
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/index.ts")
+          source = path.read_text()
+
+          old_import = 'import { ACTIVE_STREAM_SIMPLE_KEY, registerSharedProvider } from "./provider-registration.js";'
+          new_import = 'import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";'
+          if old_import in source:
+              source = source.replace(old_import, new_import, 1)
+          elif new_import not in source:
+              raise SystemExit("provider-registration import anchor not found")
+
+          old_comment = '''// Provider callback sharing across parent/child sessions is handled by
+          // registerSharedProvider() in provider-registration.ts. session_shutdown still
+          // clears ACTIVE_STREAM_SIMPLE_KEY below so a fresh top-level session can own it.
+          '''
+          new_comment = '''// Provider callback ownership across parent/child sessions is handled by
+          // provider-registration.ts and is released only by the owning session shutdown.
+          '''
+          if old_comment in source:
+              source = source.replace(old_comment, new_comment, 1)
+
+          old_lifecycle = '''\t// Reset shared session on pi session lifecycle events
+          \tconst clearSession = (event: string) => {
+          \t\tdebug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
+          \t\tsharedSession = null;
+
+          \t\t// Clear the global streamSimple if this instance registered it.
+          \t\t// This allows /reload to work — the old instance clears the flag so
+          \t\t// the new instance can register fresh without wrapping stale state.
+          \t\tconst g = globalThis as Record<symbol, any>;
+          \t\tif (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
+          \t\t\tdebug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
+          \t\t\tg[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
+          \t\t}
+          \t};
+          \tpi.on("session_start", (_event, ctx) => {
+          \t\tpiUI = ctx.ui;
+          \t\tclearSession("session_start");
+          \t});
+          \tpi.on("session_switch", (event) => clearSession(`session_switch:${event.reason}`));
+          \tpi.on("session_branch", () => clearSession("session_branch"));
+          \tpi.on("session_shutdown", () => clearSession("session_shutdown"));
+          '''
+          new_lifecycle = '''\t// Session changes reset conversation state without releasing process-wide
+          \t// provider stream ownership. Child sessions must keep using the parent's
+          \t// stateful streamSimple for their entire lifetime.
+          \tconst resetSharedSession = (event: string) => {
+          \t\tdebug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
+          \t\tsharedSession = null;
+          \t};
+          \tpi.on("session_start", (_event, ctx) => {
+          \t\tpiUI = ctx.ui;
+          \t\tresetSharedSession("session_start");
+          \t});
+          \tpi.on("session_switch", (event) => resetSharedSession(`session_switch:${event.reason}`));
+          \tpi.on("session_branch", () => resetSharedSession("session_branch"));
+          \tpi.on("session_shutdown", () => {
+          \t\tresetSharedSession("session_shutdown");
+          \t\tif (releaseSharedProvider(streamClaudeAgentSdk)) {
+          \t\t\tdebug("session_shutdown: released provider stream ownership");
+          \t\t}
+          \t});
+          '''
+          if new_lifecycle not in source:
+              if old_lifecycle not in source:
+                  raise SystemExit("session lifecycle block not found")
+              source = source.replace(old_lifecycle, new_lifecycle, 1)
+
+          path.write_text(source)
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Validate
+        run: |
+          bun run typecheck
+          bun run test
+
+      - name: Commit lifecycle fix
+        run: |
+          if git diff --quiet -- src/index.ts; then
+            echo "src/index.ts already patched"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/index.ts
+          git commit -m "fix: retain provider stream ownership until shutdown"
+          git push origin HEAD:fix/subagent-provider-registration
