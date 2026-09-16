@@ -1,0 +1,277 @@
+name: Apply dynamic model safety review fixes
+
+on:
+  push:
+    branches:
+      - feat/dynamic-model-discovery
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/dynamic-model-discovery
+          fetch-depth: 0
+
+      - name: Apply review fixes
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, got {count}")
+              return text.replace(old, new, 1)
+
+          # --- src/models.ts -------------------------------------------------
+          p = Path("src/models.ts")
+          s = p.read_text()
+
+          marker = "// --- Context-window policy ---------------------------------------------------\n"
+          helper = r'''// Translate OMP's canonical reasoning level to the Claude Code SDK wire effort.
+// OMP 18.x models expose the supported effort ladder and optional effortMap in
+// thinking metadata. Preserve a real xhigh tier when present (Opus 4.7+,
+// Fable 5.1+, etc.); only fall back to max for models whose ladder has max but
+// no xhigh (for example Opus 4.6). AskClaude can bypass OMP's normal clamping,
+// so this helper also clamps its explicit request to a safe supported tier.
+export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+type ThinkingModel = {
+    thinking?: {
+        efforts?: readonly string[];
+        effortMap?: Readonly<Record<string, string>>;
+    };
+};
+
+export function mapReasoningToClaudeEffort(model: ThinkingModel, requested?: string): ClaudeCodeEffort | undefined {
+    if (!requested || requested === "off") return undefined;
+
+    const efforts = model.thinking?.efforts;
+    let canonical = requested;
+
+    if (efforts?.length && !efforts.includes(canonical)) {
+        if (canonical === "minimal" && efforts.includes("low")) {
+            canonical = "low";
+        } else if (canonical === "xhigh" && efforts.includes("max")) {
+            // Legacy adaptive models such as Opus 4.6 expose max as their top
+            // tier and historically used it for an xhigh request.
+            canonical = "max";
+        } else if (canonical === "xhigh" && efforts.includes("high")) {
+            canonical = "high";
+        } else if (canonical === "max" && efforts.includes("xhigh")) {
+            canonical = "xhigh";
+        }
+    }
+
+    const wire = model.thinking?.effortMap?.[canonical] ?? canonical;
+    switch (wire) {
+        case "minimal": return "low"; // SDK has no minimal EffortLevel yet.
+        case "low":
+        case "medium":
+        case "high":
+        case "xhigh":
+        case "max":
+            return wire;
+        default:
+            return undefined;
+    }
+}
+
+'''
+          if helper.strip() not in s:
+              s = replace_once(s, marker, helper + marker, "insert effort helper")
+
+          pattern = re.compile(r'''function resolveDynamicRuntimeModel\(model: CatalogModel, mode: ContextWindowMode\): ClaudeCodeRuntimeModel \| null \{.*?\n\}\n\nfunction resolveAutoRuntimeModel''', re.S)
+          replacement = r'''function resolveDynamicRuntimeModel(model: CatalogModel, mode: ContextWindowMode): ClaudeCodeRuntimeModel | null {
+    const catalogWindow = model.contextWindow ?? null;
+    if (catalogWindow == null) {
+        console.error(`claude-bridge: model ${model.id} has no catalogue context window; hiding unmeasured runtime`);
+        return null;
+    }
+
+    // The OMP catalogue describes model capability, not necessarily the window
+    // Claude Code serves for this user's subscription/bare-id runtime. Until a
+    // model is measured and promoted to RUNTIME_OVERRIDE_IDS, cap registration
+    // at 200K. This is deliberately conservative: MYOMP's context-safe router
+    // must never assume an unverified 1M runtime and trigger hidden compaction.
+    const safeWindow = Math.min(catalogWindow, TWO_HUNDRED_K_CONTEXT);
+    switch (mode) {
+        case "1m":
+            // Never claim/request 1M for an unmeasured bare id.
+            return null;
+        case "200k":
+        case "auto":
+            return { cliModelId: model.id, contextWindow: safeWindow };
+    }
+}
+
+function resolveAutoRuntimeModel'''
+          s, n = pattern.subn(replacement, s, count=1)
+          if n != 1:
+              raise SystemExit(f"dynamic resolver: expected one replacement, got {n}")
+
+          s = s.replace(
+              "// discovered) model passes its canonical id unchanged to Claude Code and\n// registers the OMP catalogue contextWindow, so the registered window is never\n// fabricated. Returns null when a model has no runtime for the requested\n// forced window (that model is hidden from the picker in that mode).",
+              "// discovered) model passes its canonical id unchanged to Claude Code but\n// registers conservatively at no more than 200K until that bare-id runtime has\n// been measured. Returns null for forced 1M or when catalogue context metadata\n// is absent; those cases must not be guessed by a context-safe router."
+          )
+          s = s.replace(
+              "// id is sent to Claude Code as-is (no fabricated [1m] or forced-200K variant)\n// and the registered window mirrors the catalogue, clamped down (never up) by\n// a forced mode. MYOMP's context-safe router relies on the registered window,\n// so over-reporting relative to the id actually sent is never acceptable.",
+              "// id is sent to Claude Code as-is (no fabricated [1m] variant), while the\n// registered window is capped at 200K until runtime behavior is measured.\n// MYOMP's context-safe router relies on this value, so catalogue capability\n// alone is never treated as proof that the bare-id runtime serves 1M."
+          )
+          s = s.replace(
+              "// canonical entry at the catalogue window: the bridge has no evidence for\n// alternate windows, so it fabricates neither a [1m] nor a forced-200K variant.",
+              "// canonical entry capped at 200K: the bridge has no evidence for a larger\n// bare-id runtime, so it never fabricates a [1m] or a forced 1M variant."
+          )
+          p.write_text(s)
+
+          # --- src/index.ts --------------------------------------------------
+          p = Path("src/index.ts")
+          s = p.read_text()
+          s = replace_once(
+              s,
+              'import { buildVariantModels, buildModels, claudeCodeModelId, type ContextWindowMode, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";',
+              'import { buildVariantModels, buildModels, claudeCodeModelId, mapReasoningToClaudeEffort, type ContextWindowMode, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";',
+              "models import",
+          )
+          effort_block = '''// --- Effort level mapping ---\n// OMP reasoning levels → CC SDK effort levels. "max" appears on newer models\n// (Fable/Opus 5 era) whose registered thinking metadata exposes it directly.\n\nconst REASONING_TO_EFFORT: Record<string, EffortLevel> = {\n\tminimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max",\n};\n\n'''
+          s = replace_once(
+              s,
+              effort_block,
+              '''// --- Effort level mapping ---\n// Model-aware translation lives in models.ts so real xhigh and max tiers stay\n// distinct and the behavior is unit-testable.\n\n''',
+              "remove generic effort table",
+          )
+          s = replace_once(
+              s,
+              '''\t// OMP clamps options.reasoning to the model's registered thinking.efforts\n\t// (projected from the catalogue in buildModels), so the generic table only\n\t// translates OMP's effort names into CC SDK effort levels.\n\tconst effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;''',
+              '''\t// OMP normally clamps options.reasoning to the registered thinking ladder.\n\t// The model-aware mapper preserves a genuine xhigh tier instead of folding it\n\t// into max, while retaining legacy fallback behavior where xhigh is absent.\n\tconst effort = mapReasoningToClaudeEffort(model, options?.reasoning);''',
+              "provider effort mapping",
+          )
+          s = replace_once(
+              s,
+              '''\tconst effort = options?.thinking && options.thinking !== "off"\n\t\t? REASONING_TO_EFFORT[options.thinking] : undefined;''',
+              '''\tconst effort = options?.thinking && options.thinking !== "off"\n\t\t? mapReasoningToClaudeEffort(model ?? {}, options.thinking) : undefined;''',
+              "AskClaude effort mapping",
+          )
+          # The installed SDK's EffortLevel type may lag Claude Code's real xhigh
+          # wire support. Keep the runtime string and cast only at the SDK boundary.
+          count = s.count('...(effort ? { effort } : {}),')
+          if count != 2:
+              raise SystemExit(f"effort SDK boundaries: expected 2 matches, got {count}")
+          s = s.replace('...(effort ? { effort } : {}),', '...(effort ? { effort: effort as EffortLevel } : {}),')
+          p.write_text(s)
+
+          # --- tests/unit-model-discovery.mjs -------------------------------
+          p = Path("tests/unit-model-discovery.mjs")
+          s = p.read_text()
+          s = replace_once(
+              s,
+              '''\tcompareRevisions,\n\tisSupportedClaudeModel,''',
+              '''\tcompareRevisions,\n\tisSupportedClaudeModel,\n\tmapReasoningToClaudeEffort,''',
+              "test helper import",
+          )
+          s = s.replace(
+              'test("auto: a dynamic model gets one canonical entry at the catalogue window", () => {',
+              'test("auto: a dynamic unmeasured model gets one canonical entry capped at 200K", () => {'
+          )
+          s = replace_once(s, 'assert.equal(variants[0].contextWindow, 1_000_000);\n\tassert.equal(variants[0].name, "Claude Fable 5.1 (1M)");', 'assert.equal(variants[0].contextWindow, 200_000);\n\tassert.equal(variants[0].name, "Claude Fable 5.1 (200K)");', "auto dynamic expectation")
+          s = replace_once(
+              s,
+              '''\tconst forced1m = buildVariantModels(models, settings("1m"));\n\tassert.equal(forced1m.length, 1);\n\tassert.equal(forced1m[0].contextWindow, 1_000_000);\n\tassert.equal(claudeCodeModelId(forced1m[0], settings("1m")), "claude-fable-5-1");''',
+              '''\tconst forced1m = buildVariantModels(models, settings("1m"));\n\tassert.equal(forced1m.length, 0);''',
+              "forced 1m dynamic expectation",
+          )
+          s += r'''
+
+// --- Model-aware reasoning effort mapping ---
+
+test("real xhigh tiers stay distinct from max", () => {
+    const modern = catalogEntry("claude-opus-5", {
+        thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"] },
+    });
+    assert.equal(mapReasoningToClaudeEffort(modern, "xhigh"), "xhigh");
+    assert.equal(mapReasoningToClaudeEffort(modern, "max"), "max");
+
+    const fable51 = catalogEntry("claude-fable-5-1", {
+        thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"] },
+    });
+    assert.equal(mapReasoningToClaudeEffort(fable51, "xhigh"), "xhigh");
+    assert.equal(mapReasoningToClaudeEffort(fable51, "max"), "max");
+});
+
+test("legacy models without a real xhigh tier retain the max fallback", () => {
+    const opus46 = catalogEntry("claude-opus-4-6", {
+        thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "max"] },
+    });
+    assert.equal(mapReasoningToClaudeEffort(opus46, "xhigh"), "max");
+});
+
+test("thinking effortMap is honored before sending the wire effort", () => {
+    const mapped = catalogEntry("claude-opus-5", {
+        thinking: {
+            mode: "anthropic-adaptive",
+            efforts: ["low", "medium", "high", "xhigh", "max"],
+            effortMap: { xhigh: "high" },
+        },
+    });
+    assert.equal(mapReasoningToClaudeEffort(mapped, "xhigh"), "high");
+});
+
+test("dynamic context safety never promotes an unmeasured catalogue model above 200K", () => {
+    const oneMillion = buildModels([catalogEntry("claude-opus-5", { contextWindow: 1_000_000 })]);
+    const auto = buildVariantModels(oneMillion, settings("auto"));
+    assert.equal(auto.length, 1);
+    assert.equal(auto[0].contextWindow, 200_000);
+    assert.equal(claudeCodeModelId(auto[0], settings("auto")), "claude-opus-5");
+    assert.equal(buildVariantModels(oneMillion, settings("1m")).length, 0);
+
+    const smaller = buildModels([catalogEntry("claude-opus-6", { contextWindow: 128_000 })]);
+    assert.equal(buildVariantModels(smaller, settings("auto"))[0].contextWindow, 128_000);
+});
+'''
+          p.write_text(s)
+
+          # --- README --------------------------------------------------------
+          p = Path("README.md")
+          s = p.read_text()
+          s = s.replace(
+              "**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. Fable 5.1, Opus 5) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged and the registered window mirrors OMP's catalogue (clamped down, never up, by a forced mode). The bridge never fabricates a `[1m]` request or a forced-200K variant for a model it hasn't measured.",
+              "**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. Fable 5.1, Opus 5) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged, but the registered window is conservatively capped at **200K** (or lower if the catalogue says lower) until that bare-id runtime is measured. Forced `1m` hides unmeasured models rather than claiming an unverified 1M runtime."
+          )
+          s = s.replace("| `claude-bridge/claude-fable-5-1` | 1M (catalogue, discovered) |", "| `claude-bridge/claude-fable-5-1` | 200K (runtime unmeasured; catalogue advertises 1M) |")
+          s = s.replace("| `claude-bridge/claude-opus-5` | 1M (catalogue, discovered) |", "| `claude-bridge/claude-opus-5` | 200K (runtime unmeasured; catalogue advertises 1M) |")
+          s = s.replace(
+              "applies the selected context-window policy (measured overrides for known models, catalogue windows for newly discovered ones)",
+              "applies the selected context-window policy (measured overrides for known models, conservative ≤200K registration for newly discovered ones)"
+          )
+          p.write_text(s)
+
+          # --- CHANGELOG -----------------------------------------------------
+          p = Path("CHANGELOG.md")
+          s = p.read_text()
+          s = s.replace(
+              "- Models without measured Claude Code runtime behavior get a single canonical\n  picker entry: the bare id is sent to Claude Code and the registered window\n  mirrors the OMP catalogue (never fabricated `[1m]` / forced-200K variants).\n  Measured models keep their existing per-window entries and runtime overrides.",
+              "- Models without measured Claude Code runtime behavior get a single canonical\n  picker entry: the bare id is sent to Claude Code and the registered window is\n  conservatively capped at 200K until measured; forced `1m` hides them instead\n  of claiming an unverified runtime. Measured models keep their existing\n  per-window entries and runtime overrides."
+          )
+          p.write_text(s)
+
+      - name: Validate
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test
+
+      - name: Commit fixes and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/workflows/patch-dynamic-model-safety.yml
+          git add src/models.ts src/index.ts tests/unit-model-discovery.mjs README.md CHANGELOG.md .github/workflows/patch-dynamic-model-safety.yml
+          git commit -m "fix: preserve effort tiers and context safety"
+          git push origin HEAD:feat/dynamic-model-discovery
