@@ -115,7 +115,8 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
-// MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
+// MODELS is discovered dynamically from OMP's Anthropic catalogue — see
+// buildModels in models.ts (family/revision parsing, newest-first ordering).
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false, contextWindow: "auto" };
@@ -773,10 +774,11 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 }
 
 // --- Effort level mapping ---
-// OMP reasoning levels → CC SDK effort levels
+// OMP reasoning levels → CC SDK effort levels. "max" appears on newer models
+// (Fable/Opus 5 era) whose registered thinking metadata exposes it directly.
 
 const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
+	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max",
 };
 
 // --- Provider helpers: misc ---
@@ -1223,13 +1225,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
-	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
-	const effort = options?.reasoning
-		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[options.reasoning]
-		: undefined;
+	// OMP clamps options.reasoning to the model's registered thinking.efforts
+	// (projected from the catalogue in buildModels), so the generic table only
+	// translates OMP's effort names into CC SDK effort levels.
+	const effort = options?.reasoning ? REASONING_TO_EFFORT[options.reasoning] : undefined;
 
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
