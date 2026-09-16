@@ -88,7 +88,7 @@
 	],
 	"omp": {
 		"extensions": [
-			"./src/omp-extension.ts"
+			"./src/index.ts"
 		]
 	}
 }
