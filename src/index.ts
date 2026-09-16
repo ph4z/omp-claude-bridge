@@ -23,6 +23,7 @@ import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
+import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -107,21 +108,8 @@ function diagDump(label: string, data: Record<string, unknown>) {
 
 // --- Constants ---
 
-// Global key to prevent re-registration of the provider across module reloads.
-//
-// Extensions like OMP subagents spawn a subagent and it loads this module
-// again. Without this guard, the subagent's call to registerProvider() would
-// overwrite the parent's `streamSimple` function reference in the shared
-// ModelRegistry. When the parent later delivers a tool result, it would call
-// the subagent's `streamSimple` (which has empty state) instead of its own.
-//
-// By storing the active streamSimple in a Symbol.for() global (shared across all
-// module instances), we ensure only the FIRST instance to register takes effect.
-// Subsequent instances wrap the stored function instead of overwriting it.
-//
-// On session_shutdown (including /reload), clearSession() resets this so a fresh
-// registration can occur for the next session.
-const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
+// Provider callback ownership across parent/child sessions is handled by
+// provider-registration.ts and is released only by the owning session shutdown.
 
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
@@ -1630,27 +1618,25 @@ export default function (pi: ExtensionAPI) {
 	};
 	const registeredModels = buildVariantModels(MODELS, longContextSettings);
 
-	// Reset shared session on pi session lifecycle events
-	const clearSession = (event: string) => {
+	// Session changes reset conversation state without releasing process-wide
+	// provider stream ownership. Child sessions must keep using the parent's
+	// stateful streamSimple for their entire lifetime.
+	const resetSharedSession = (event: string) => {
 		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		sharedSession = null;
-
-		// Clear the global streamSimple if this instance registered it.
-		// This allows /reload to work — the old instance clears the flag so
-		// the new instance can register fresh without wrapping stale state.
-		const g = globalThis as Record<symbol, any>;
-		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
-			debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
-			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
-		}
 	};
 	pi.on("session_start", (_event, ctx) => {
 		piUI = ctx.ui;
-		clearSession("session_start");
+		resetSharedSession("session_start");
 	});
-	pi.on("session_switch", (event) => clearSession(`session_switch:${event.reason}`));
-	pi.on("session_branch", () => clearSession("session_branch"));
-	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+	pi.on("session_switch", (event) => resetSharedSession(`session_switch:${event.reason}`));
+	pi.on("session_branch", () => resetSharedSession("session_branch"));
+	pi.on("session_shutdown", () => {
+		resetSharedSession("session_shutdown");
+		if (releaseSharedProvider(streamClaudeAgentSdk)) {
+			debug("session_shutdown: released provider stream ownership");
+		}
+	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
@@ -1699,29 +1685,24 @@ export default function (pi: ExtensionAPI) {
 
 	// --- Provider ---
 	//
-	// Guard against re-registration when the module is loaded multiple times
-	// (e.g., when spawning subagents). The shared ModelRegistry would otherwise
-	// overwrite the parent's streamSimple, breaking tool result delivery.
-	// See ACTIVE_STREAM_SIMPLE_KEY for the full mechanism.
-
-	const g = globalThis as Record<symbol, any>;
-	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
-		// First instance: store our streamSimple and register.
-		g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
-		pi.registerProvider(PROVIDER_ID, {
+	// OMP child sessions share the parent's ModelRegistry, but OMP clears
+	// extension-owned provider registrations before replaying registrations from
+	// the child's extension runtime. Therefore every session must register the
+	// provider, while every child must keep using the first (parent) streamSimple.
+	const { isFirstProviderInstance } = registerSharedProvider({
+		providerId: PROVIDER_ID,
+		streamSimple: streamClaudeAgentSdk,
+		config: {
 			baseUrl: "claude-bridge",
 			apiKey: "not-used",
 			api: "claude-bridge",
 			models: registeredModels,
-			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
-			streamSimple: streamClaudeAgentSdk as any,
-		});
-	} else {
-		// Subsequent instance (subagent session): skip registration entirely.
-		// The subagent already has access to claude-bridge models via the shared
-		// ModelRegistry from the parent's registration. Calls to those models
-		// route through the parent's streamSimple via reentrant QueryContexts.
-		debug(`provider: skipping re-registration, parent instance active (module=${moduleInstanceId})`);
+		},
+		// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
+		registerProvider: (providerId, config) => pi.registerProvider(providerId, config as any),
+	});
+	if (!isFirstProviderInstance) {
+		debug(`provider: re-registering with parent streamSimple (module=${moduleInstanceId})`);
 	}
 
 	// --- AskClaude tool ---
