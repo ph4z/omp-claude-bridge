@@ -23,7 +23,7 @@ import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
-import { ACTIVE_STREAM_SIMPLE_KEY, registerSharedProvider } from "./provider-registration.js";
+import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -108,9 +108,8 @@ function diagDump(label: string, data: Record<string, unknown>) {
 
 // --- Constants ---
 
-// Provider callback sharing across parent/child sessions is handled by
-// registerSharedProvider() in provider-registration.ts. session_shutdown still
-// clears ACTIVE_STREAM_SIMPLE_KEY below so a fresh top-level session can own it.
+// Provider callback ownership across parent/child sessions is handled by
+// provider-registration.ts and is released only by the owning session shutdown.
 
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
@@ -1619,27 +1618,25 @@ export default function (pi: ExtensionAPI) {
 	};
 	const registeredModels = buildVariantModels(MODELS, longContextSettings);
 
-	// Reset shared session on pi session lifecycle events
-	const clearSession = (event: string) => {
+	// Session changes reset conversation state without releasing process-wide
+	// provider stream ownership. Child sessions must keep using the parent's
+	// stateful streamSimple for their entire lifetime.
+	const resetSharedSession = (event: string) => {
 		debug(`${event}: clearing session ${sharedSession?.sessionId?.slice(0, 8) ?? "none"}`);
 		sharedSession = null;
-
-		// Clear the global streamSimple if this instance registered it.
-		// This allows /reload to work — the old instance clears the flag so
-		// the new instance can register fresh without wrapping stale state.
-		const g = globalThis as Record<symbol, any>;
-		if (g[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) {
-			debug(`${event}: clearing ACTIVE_STREAM_SIMPLE_KEY`);
-			g[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
-		}
 	};
 	pi.on("session_start", (_event, ctx) => {
 		piUI = ctx.ui;
-		clearSession("session_start");
+		resetSharedSession("session_start");
 	});
-	pi.on("session_switch", (event) => clearSession(`session_switch:${event.reason}`));
-	pi.on("session_branch", () => clearSession("session_branch"));
-	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+	pi.on("session_switch", (event) => resetSharedSession(`session_switch:${event.reason}`));
+	pi.on("session_branch", () => resetSharedSession("session_branch"));
+	pi.on("session_shutdown", () => {
+		resetSharedSession("session_shutdown");
+		if (releaseSharedProvider(streamClaudeAgentSdk)) {
+			debug("session_shutdown: released provider stream ownership");
+		}
+	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
