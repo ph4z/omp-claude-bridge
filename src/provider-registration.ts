@@ -20,7 +20,7 @@ export interface SharedProviderRegistrationOptions<TStream, TConfig extends Reco
  * stateful tool-result delivery.
  *
  * The invariant is: every session registers, every session reuses the first
- * streamSimple callback.
+ * streamSimple callback until its owning session shuts down.
  */
 export function registerSharedProvider<TStream, TConfig extends Record<string, unknown>>(
 	options: SharedProviderRegistrationOptions<TStream, TConfig>,
@@ -40,4 +40,14 @@ export function registerSharedProvider<TStream, TConfig extends Record<string, u
 	});
 
 	return { isFirstProviderInstance, activeStreamSimple };
+}
+
+/** Release ownership only when the shutting-down instance owns the stream. */
+export function releaseSharedProvider<TStream>(
+	streamSimple: TStream,
+	globalState: Record<symbol, unknown> = globalThis as Record<symbol, unknown>,
+): boolean {
+	if (globalState[ACTIVE_STREAM_SIMPLE_KEY] !== streamSimple) return false;
+	delete globalState[ACTIVE_STREAM_SIMPLE_KEY];
+	return true;
 }
