@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ACTIVE_STREAM_SIMPLE_KEY, registerSharedProvider } from "../src/provider-registration.ts";
+import {
+	ACTIVE_STREAM_SIMPLE_KEY,
+	registerSharedProvider,
+	releaseSharedProvider,
+} from "../src/provider-registration.ts";
 
 test("every session registers while child sessions reuse the first streamSimple", () => {
 	const globalState = {};
@@ -32,4 +36,9 @@ test("every session registers while child sessions reuse the first streamSimple"
 	assert.equal(registrations[0].config.streamSimple, parentStream);
 	assert.equal(registrations[1].config.streamSimple, parentStream);
 	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], parentStream);
+
+	assert.equal(releaseSharedProvider(childStream, globalState), false);
+	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], parentStream);
+	assert.equal(releaseSharedProvider(parentStream, globalState), true);
+	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], undefined);
 });
