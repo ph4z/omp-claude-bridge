@@ -97,6 +97,55 @@ export function buildModels<T extends DiscoverableCatalogModel>(piAiModels: read
 		}));
 }
 
+// Translate OMP's canonical reasoning level to the Claude Code SDK wire effort.
+// OMP 18.x models expose the supported effort ladder and optional effortMap in
+// thinking metadata. Preserve a real xhigh tier when present (Opus 4.7+,
+// Fable 5.1+, etc.); only fall back to max for models whose ladder has max but
+// no xhigh (for example Opus 4.6). AskClaude can bypass OMP's normal clamping,
+// so this helper also clamps its explicit request to a safe supported tier.
+export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+type ThinkingModel = {
+	thinking?: {
+		efforts?: readonly string[];
+		effortMap?: Readonly<Record<string, string>>;
+	};
+};
+
+export function mapReasoningToClaudeEffort(model: ThinkingModel, requested?: string): ClaudeCodeEffort | undefined {
+	if (!requested || requested === "off") return undefined;
+
+	const efforts = model.thinking?.efforts;
+	let canonical = requested;
+
+	if (efforts?.length && !efforts.includes(canonical)) {
+		if (canonical === "minimal" && efforts.includes("low")) {
+			canonical = "low";
+		} else if (canonical === "xhigh" && efforts.includes("max")) {
+			// Legacy adaptive models such as Opus 4.6 expose max as their top
+			// tier and historically used it for an xhigh request.
+			canonical = "max";
+		} else if (canonical === "xhigh" && efforts.includes("high")) {
+			canonical = "high";
+		} else if (canonical === "max" && efforts.includes("xhigh")) {
+			canonical = "xhigh";
+		}
+	}
+
+	const wire = model.thinking?.effortMap?.[canonical] ?? canonical;
+	switch (wire) {
+		case "minimal": return "low"; // SDK has no minimal EffortLevel yet.
+		case "low":
+		case "medium":
+		case "high":
+		case "xhigh":
+		case "max":
+			return wire;
+		default:
+			return undefined;
+	}
+}
+
 // --- Context-window policy ---------------------------------------------------
 
 // User-selectable context-window policy (see provider.contextWindow in config).
@@ -140,10 +189,10 @@ type CatalogModel = { id: string; contextWindow?: number | null };
 
 // Resolve the Claude Code runtime for a registered model. Models with an
 // explicit override keep their measured behavior; every other (dynamically
-// discovered) model passes its canonical id unchanged to Claude Code and
-// registers the OMP catalogue contextWindow, so the registered window is never
-// fabricated. Returns null when a model has no runtime for the requested
-// forced window (that model is hidden from the picker in that mode).
+// discovered) model passes its canonical id unchanged to Claude Code but
+// registers conservatively at no more than 200K until that bare-id runtime has
+// been measured. Returns null for forced 1M or when catalogue context metadata
+// is absent; those cases must not be guessed by a context-safe router.
 export function resolveClaudeCodeRuntimeModel(model: CatalogModel, settings: LongContextSettings): ClaudeCodeRuntimeModel | null {
 	if (hasRuntimeOverride(model.id)) {
 		switch (settings.contextWindow) {
@@ -159,23 +208,30 @@ export function resolveClaudeCodeRuntimeModel(model: CatalogModel, settings: Lon
 }
 
 // Catalogue-window path for models without a measured override. The canonical
-// id is sent to Claude Code as-is (no fabricated [1m] or forced-200K variant)
-// and the registered window mirrors the catalogue, clamped down (never up) by
-// a forced mode. MYOMP's context-safe router relies on the registered window,
-// so over-reporting relative to the id actually sent is never acceptable.
+// id is sent to Claude Code as-is (no fabricated [1m] variant), while the
+// registered window is capped at 200K until runtime behavior is measured.
+// MYOMP's context-safe router relies on this value, so catalogue capability
+// alone is never treated as proof that the bare-id runtime serves 1M.
 function resolveDynamicRuntimeModel(model: CatalogModel, mode: ContextWindowMode): ClaudeCodeRuntimeModel | null {
 	const catalogWindow = model.contextWindow ?? null;
 	if (catalogWindow == null) {
-		console.error(`claude-bridge: model ${model.id} has no catalogue context window, defaulting to 200K`);
-		return mode === "1m" ? null : { cliModelId: model.id, contextWindow: TWO_HUNDRED_K_CONTEXT };
+		console.error(`claude-bridge: model ${model.id} has no catalogue context window; hiding unmeasured runtime`);
+		return null;
 	}
+
+	// The OMP catalogue describes model capability, not necessarily the window
+	// Claude Code serves for this user's subscription/bare-id runtime. Until a
+	// model is measured and promoted to RUNTIME_OVERRIDE_IDS, cap registration
+	// at 200K. This is deliberately conservative: MYOMP's context-safe router
+	// must never assume an unverified 1M runtime and trigger hidden compaction.
+	const safeWindow = Math.min(catalogWindow, TWO_HUNDRED_K_CONTEXT);
 	switch (mode) {
 		case "1m":
-			return catalogWindow >= ONE_M_CONTEXT ? { cliModelId: model.id, contextWindow: catalogWindow } : null;
+			// Never claim/request 1M for an unmeasured bare id.
+			return null;
 		case "200k":
-			return { cliModelId: model.id, contextWindow: Math.min(catalogWindow, TWO_HUNDRED_K_CONTEXT) };
 		case "auto":
-			return { cliModelId: model.id, contextWindow: catalogWindow };
+			return { cliModelId: model.id, contextWindow: safeWindow };
 	}
 }
 
@@ -296,8 +352,8 @@ function variantName(baseName: string, contextWindow: number): string {
 // contextWindow must match the window the bridge actually requests (see
 // claudeCodeModelId), or OMP's status bar and auto-compaction threshold will
 // misreport. Dynamically discovered models (no override) get exactly one
-// canonical entry at the catalogue window: the bridge has no evidence for
-// alternate windows, so it fabricates neither a [1m] nor a forced-200K variant.
+// canonical entry capped at 200K: the bridge has no evidence for a larger
+// bare-id runtime, so it never fabricates a [1m] or a forced 1M variant.
 export function buildVariantModels<T extends { id: string; name: string; contextWindow?: number | null }>(
 	models: T[],
 	settings: LongContextSettings,

@@ -131,7 +131,7 @@ Models with **measured** Claude Code runtime behavior expand into one picker ent
 
 The suffixed alternate exists only for the window that isn't the default — e.g. under `auto` you get `claude-opus-4-8` (1M) + `claude-opus-4-8-200k`, and under `"200k"` you get `claude-opus-4-8` (200K) + `claude-opus-4-8-1m`.
 
-**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. Fable 5.1, Opus 5) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged and the registered window mirrors OMP's catalogue (clamped down, never up, by a forced mode). The bridge never fabricates a `[1m]` request or a forced-200K variant for a model it hasn't measured.
+**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. Fable 5.1, Opus 5) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged, but the registered window is conservatively capped at **200K** (or lower if the catalogue says lower) until that bare-id runtime is measured. Forced `1m` hides unmeasured models rather than claiming an unverified 1M runtime.
 
 > Forcing 1M is a *request*: some models may still be **served** 200K by your subscription entitlement. Set `CLAUDE_BRIDGE_DEBUG=1` to log the served window (see [Debugging](#debugging)).
 
@@ -152,10 +152,10 @@ With the current OMP catalogue and default `contextWindow: "auto"` you get, e.g.
 
 | Picker id (auto) | Window |
 | --------- | ------ |
-| `claude-bridge/claude-fable-5-1` | 1M (catalogue, discovered) |
+| `claude-bridge/claude-fable-5-1` | 200K (runtime unmeasured; catalogue advertises 1M) |
 | `claude-bridge/claude-fable-5` | 200K |
 | `claude-bridge/claude-fable-5-1m` | 1M |
-| `claude-bridge/claude-opus-5` | 1M (catalogue, discovered) |
+| `claude-bridge/claude-opus-5` | 200K (runtime unmeasured; catalogue advertises 1M) |
 | `claude-bridge/claude-opus-4-8` | 1M |
 | `claude-bridge/claude-opus-4-8-200k` | 200K |
 | `claude-bridge/claude-opus-4-7` | 1M |
@@ -238,7 +238,7 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 
 ## How it works
 
-OMP's built-in tools are bridged to Claude Code and back, so from your side it behaves like any other OMP provider. Model discovery and routing live in [`src/models.ts`](src/models.ts), which is deliberately free of runtime imports so the discovery and context-window policy stay unit-testable in isolation. On registration, the extension discovers bridge-compatible Claude models from OMP's Anthropic catalogue, applies the selected context-window policy (measured overrides for known models, catalogue windows for newly discovered ones), and registers the resulting models with OMP. The Claude Agent SDK's runtime `supportedModels()` API is intentionally not part of initial registration — OMP needs the model list synchronously at startup — but the catalogue layer is structured so a future optional runtime-validation pass can enrich it.
+OMP's built-in tools are bridged to Claude Code and back, so from your side it behaves like any other OMP provider. Model discovery and routing live in [`src/models.ts`](src/models.ts), which is deliberately free of runtime imports so the discovery and context-window policy stay unit-testable in isolation. On registration, the extension discovers bridge-compatible Claude models from OMP's Anthropic catalogue, applies the selected context-window policy (measured overrides for known models, conservative ≤200K registration for newly discovered ones), and registers the resulting models with OMP. The Claude Agent SDK's runtime `supportedModels()` API is intentionally not part of initial registration — OMP needs the model list synchronously at startup — but the catalogue layer is structured so a future optional runtime-validation pass can enrich it.
 
 ## Debugging
 

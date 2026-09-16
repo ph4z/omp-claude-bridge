@@ -16,9 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - Models without measured Claude Code runtime behavior get a single canonical
-  picker entry: the bare id is sent to Claude Code and the registered window
-  mirrors the OMP catalogue (never fabricated `[1m]` / forced-200K variants).
-  Measured models keep their existing per-window entries and runtime overrides.
+  picker entry: the bare id is sent to Claude Code and the registered window is
+  conservatively capped at 200K until measured; forced `1m` hides them instead
+  of claiming an unverified runtime. Measured models keep their existing
+  per-window entries and runtime overrides.
 - `resolveModel` prefers an exact id match over partial containment, so an
   exact id never resolves to a newer revision containing it as a prefix.
 - Thinking metadata is now projected from the catalogue into registration, and

@@ -12,6 +12,7 @@ import {
 	claudeCodeModelId,
 	compareRevisions,
 	isSupportedClaudeModel,
+	mapReasoningToClaudeEffort,
 	parseClaudeModelId,
 	resolveModel,
 } from "../src/models.ts";
@@ -173,13 +174,13 @@ test("newly discovered model ids never appear as exact-id literals in models.ts"
 
 // --- Context-window policy for dynamically discovered models ---
 
-test("auto: a dynamic model gets one canonical entry at the catalogue window", () => {
+test("auto: a dynamic unmeasured model gets one canonical entry capped at 200K", () => {
 	const models = buildModels([catalogEntry("claude-fable-5-1", { name: "Claude Fable 5.1" })]);
 	const variants = buildVariantModels(models, settings("auto"));
 	assert.equal(variants.length, 1);
 	assert.equal(variants[0].id, "claude-fable-5-1");
-	assert.equal(variants[0].contextWindow, 1_000_000);
-	assert.equal(variants[0].name, "Claude Fable 5.1 (1M)");
+	assert.equal(variants[0].contextWindow, 200_000);
+	assert.equal(variants[0].name, "Claude Fable 5.1 (200K)");
 	// The canonical id goes to Claude Code unchanged — no fabricated [1m].
 	assert.equal(claudeCodeModelId(variants[0], settings("auto")), "claude-fable-5-1");
 });
@@ -194,9 +195,7 @@ test("forced modes clamp a dynamic model's window but never rewrite its id", () 
 	assert.equal(claudeCodeModelId(forced200k[0], settings("200k")), "claude-fable-5-1");
 
 	const forced1m = buildVariantModels(models, settings("1m"));
-	assert.equal(forced1m.length, 1);
-	assert.equal(forced1m[0].contextWindow, 1_000_000);
-	assert.equal(claudeCodeModelId(forced1m[0], settings("1m")), "claude-fable-5-1");
+	assert.equal(forced1m.length, 0);
 });
 
 test("1m: a dynamic model whose catalogue window is below 1M is hidden", () => {
@@ -214,4 +213,51 @@ test("dynamic models never emit -1m/-200k variant ids alongside override models"
 	// Override models keep their measured behavior: bare Fable 5 serves 200K.
 	assert.equal(variants.find((m) => m.id === "claude-fable-5").contextWindow, 200_000);
 	assert.equal(claudeCodeModelId(variants.find((m) => m.id === "claude-fable-5-1m"), settings("auto")), "claude-fable-5[1m]");
+});
+
+
+// --- Model-aware reasoning effort mapping ---
+
+test("real xhigh tiers stay distinct from max", () => {
+	const modern = catalogEntry("claude-opus-5", {
+		thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"] },
+	});
+	assert.equal(mapReasoningToClaudeEffort(modern, "xhigh"), "xhigh");
+	assert.equal(mapReasoningToClaudeEffort(modern, "max"), "max");
+
+	const fable51 = catalogEntry("claude-fable-5-1", {
+		thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"] },
+	});
+	assert.equal(mapReasoningToClaudeEffort(fable51, "xhigh"), "xhigh");
+	assert.equal(mapReasoningToClaudeEffort(fable51, "max"), "max");
+});
+
+test("legacy models without a real xhigh tier retain the max fallback", () => {
+	const opus46 = catalogEntry("claude-opus-4-6", {
+		thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "max"] },
+	});
+	assert.equal(mapReasoningToClaudeEffort(opus46, "xhigh"), "max");
+});
+
+test("thinking effortMap is honored before sending the wire effort", () => {
+	const mapped = catalogEntry("claude-opus-5", {
+		thinking: {
+			mode: "anthropic-adaptive",
+			efforts: ["low", "medium", "high", "xhigh", "max"],
+			effortMap: { xhigh: "high" },
+		},
+	});
+	assert.equal(mapReasoningToClaudeEffort(mapped, "xhigh"), "high");
+});
+
+test("dynamic context safety never promotes an unmeasured catalogue model above 200K", () => {
+	const oneMillion = buildModels([catalogEntry("claude-opus-5", { contextWindow: 1_000_000 })]);
+	const auto = buildVariantModels(oneMillion, settings("auto"));
+	assert.equal(auto.length, 1);
+	assert.equal(auto[0].contextWindow, 200_000);
+	assert.equal(claudeCodeModelId(auto[0], settings("auto")), "claude-opus-5");
+	assert.equal(buildVariantModels(oneMillion, settings("1m")).length, 0);
+
+	const smaller = buildModels([catalogEntry("claude-opus-6", { contextWindow: 128_000 })]);
+	assert.equal(buildVariantModels(smaller, settings("auto"))[0].contextWindow, 128_000);
 });
