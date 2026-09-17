@@ -149,9 +149,11 @@ export function mapReasoningToClaudeEffort(model: ThinkingModel, requested?: str
 // --- Context-window policy ---------------------------------------------------
 
 // User-selectable context-window policy (see provider.contextWindow in config).
-//   "auto"  - per-model default policy (measured SDK behavior, else catalogue window).
-//   "1m"    - force 1M: only register 1M-capable models, request [1m] where known.
-//   "200k"  - force 200K: register models at (most) 200K, request bare model ids.
+//   "auto"  - per-model measured default, else conservative dynamic policy.
+//   "1m"    - prefer 1M for measured models; single-window models keep their
+//             sole runtime. Unmeasured dynamic models remain hidden.
+//   "200k"  - prefer 200K for measured models; single-window models keep their
+//             sole runtime. Unmeasured dynamic models stay capped at 200K.
 export type ContextWindowMode = "auto" | "1m" | "200k";
 
 export type LongContextSettings = {
