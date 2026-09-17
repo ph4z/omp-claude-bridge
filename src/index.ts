@@ -1229,6 +1229,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
+	debug("provider: reasoning-map",
+		`registeredModel=${model.id} cliModel=${cliModel}`,
+		`requestedReasoning=${options?.reasoning ?? "default"} mappedEffort=${effort ?? "default"}`);
 	const extraArgs: Record<string, string | null> = { model: cliModel };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
@@ -1478,6 +1481,10 @@ async function promptAndWait(
 		model: cliModel,
 	};
 	if (effort) extraArgs["thinking-display"] = "summarized";
+
+	debug("askClaude: reasoning-map",
+		`model=${modelId} cliModel=${cliModel}`,
+		`requestedReasoning=${options?.thinking ?? "default"} mappedEffort=${effort ?? "default"}`);
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,

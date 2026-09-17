@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Debug-mode reasoning instrumentation: provider and AskClaude calls now log a
+  dedicated `reasoning-map` record showing the OMP-requested reasoning level,
+  the mapped Claude Agent SDK effort, and the effective Claude Code model id.
 - Dynamic Claude model discovery from OMP's Anthropic catalogue. The picker is
   no longer driven by a hard-coded model-id list: any revision of a validated
   family (fable, opus, sonnet, haiku) at or above its baseline is discovered,
