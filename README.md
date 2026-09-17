@@ -245,6 +245,7 @@ OMP's built-in tools are bridged to Claude Code and back, so from your side it b
 Set `CLAUDE_BRIDGE_DEBUG=1` for detailed logs:
 
 - **Bridge log** — `~/.omp/agent/claude-bridge.log`: every provider call, session-sync decision, tool-result delivery, and Claude Code stderr. Override the path with `CLAUDE_BRIDGE_DEBUG_PATH`.
+- **Reasoning-effort mapping** — provider and AskClaude calls emit a dedicated `reasoning-map` line with the registered/CLI model, the reasoning level requested by OMP, and the effort actually passed to the Claude Agent SDK. For example, `requestedReasoning=xhigh mappedEffort=xhigh`. Check it with `grep 'reasoning-map' ~/.omp/agent/claude-bridge.log`.
 - **Per-query CLI logs** — `~/.omp/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log`: the Claude Code subprocess's own debug stream, one file per query. Tags are `provider`, `continuation`, or `askclaude`.
 
 When filing a session-resume bug (e.g. "No conversation found"), the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file are the most useful attachments.
