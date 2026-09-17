@@ -191,20 +191,36 @@ type CatalogModel = { id: string; contextWindow?: number | null };
 // explicit override keep their measured behavior; every other (dynamically
 // discovered) model passes its canonical id unchanged to Claude Code but
 // registers conservatively at no more than 200K until that bare-id runtime has
-// been measured. Returns null for forced 1M or when catalogue context metadata
-// is absent; those cases must not be guessed by a context-safe router.
+// been measured. The global 1m/200k preference selects the window where the
+// override model actually supports it, but never forces an impossible runtime
+// onto a single-window model (e.g. Haiku 4.5 is 200K-only, Opus 4.7 is 1M-only):
+// such a model falls back to its sole supported window. Returns null only for the
+// dynamic (unmeasured) forced-1M case or when catalogue context metadata is
+// absent; those cases must not be guessed by a context-safe router.
 export function resolveClaudeCodeRuntimeModel(model: CatalogModel, settings: LongContextSettings): ClaudeCodeRuntimeModel | null {
 	if (hasRuntimeOverride(model.id)) {
-		switch (settings.contextWindow) {
-			case "1m":
-				return resolveForcedOneMRuntimeModel(model.id);
-			case "200k":
-				return resolveForcedTwoHundredKRuntimeModel(model.id);
-			case "auto":
-				return resolveAutoRuntimeModel(model.id, settings);
-		}
+		if (settings.contextWindow === "auto") return resolveAutoRuntimeModel(model.id, settings);
+		// A forced 1m/200k preference picks that window when supported; otherwise it
+		// degrades to the model's only valid window rather than throwing. This mirrors
+		// buildVariantModels' default-variant selection, so the unsuffixed picker entry
+		// and its runtime always agree.
+		const available = availableOverrideRuntimes(model.id);
+		const preferred = available.find((a) => a.mode === settings.contextWindow);
+		return preferred?.runtime ?? available[0]?.runtime ?? null;
 	}
 	return resolveDynamicRuntimeModel(model, settings.contextWindow);
+}
+
+// The window(s) an override model actually supports, in 1M-first order. Derived
+// from the measured forced-runtime resolvers so single- vs dual-window behavior
+// is never special-cased per model id.
+function availableOverrideRuntimes(modelId: string): Array<{ mode: "1m" | "200k"; runtime: ClaudeCodeRuntimeModel }> {
+	const out: Array<{ mode: "1m" | "200k"; runtime: ClaudeCodeRuntimeModel }> = [];
+	const oneM = resolveForcedOneMRuntimeModel(modelId);
+	if (oneM != null) out.push({ mode: "1m", runtime: oneM });
+	const twoK = resolveForcedTwoHundredKRuntimeModel(modelId);
+	if (twoK != null) out.push({ mode: "200k", runtime: twoK });
+	return out;
 }
 
 // Catalogue-window path for models without a measured override. The canonical

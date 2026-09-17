@@ -16,6 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ordered newest-first, and registered with the catalogue's metadata (context
   window, max tokens, thinking/effort capabilities). Newly shipped revisions
   such as Fable 5.1 and Opus 5 appear automatically.
+- AskClaude's public `thinking` parameter now accepts `max`, alongside `off`,
+  `minimal`, `low`, `medium`, `high`, and `xhigh`. The value flows through the
+  existing model-aware `mapReasoningToClaudeEffort` mapper (no AskClaude-side
+  remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Changed
 - Models without measured Claude Code runtime behavior get a single canonical
@@ -29,6 +33,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the effort table understands the new top `max` tier.
 - `@oh-my-pi/*` devDependencies bumped to ^18.2.2 so typecheck/tests run
   against the same catalogue as current OMP installs (peer ranges unchanged).
+
+### Fixed
+- Single-window measured models no longer throw when the global
+  `provider.contextWindow` preference names the other window. A model that
+  supports only one Claude Code runtime (Haiku 4.5 is 200K-only, Opus 4.7 is
+  1M-only) now degrades to its sole supported window instead of fabricating an
+  impossible `[1m]` runtime or raising. The runtime is derived from the model's
+  measured windows so any future single-window model behaves the same; dual-window
+  models still honor the global preference.
 
 ## [0.8.1] - 2026-07-07
 
