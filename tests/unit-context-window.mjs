@@ -111,9 +111,37 @@ test("claudeCodeModelId: a suffixed id forces its window regardless of config", 
 	assert.equal(claudeCodeModelId({ id: "claude-opus-4-6-1m" }, settings("auto")), "claude-opus-4-6[1m]");
 });
 
-test("claudeCodeModelId throws when a model has no runtime for the requested window", () => {
+test("claudeCodeModelId throws only when an explicit suffixed variant names an unsupported window", () => {
+	// A hand-crafted suffix asking for a window the model does not support is a
+	// genuine error (buildVariantModels never registers such a variant).
 	assert.throws(() => claudeCodeModelId({ id: "claude-haiku-4-5-1m" }, settings("auto")));
 	assert.throws(() => claudeCodeModelId({ id: "claude-opus-4-7-200k" }, settings("auto")));
-	assert.throws(() => claudeCodeModelId({ id: "claude-haiku-4-5" }, settings("1m")));
-	assert.throws(() => claudeCodeModelId({ id: "claude-opus-4-7" }, settings("200k")));
+});
+
+test("single-window models resolve to their only window regardless of global preference, never fabricating an impossible runtime", () => {
+	// Haiku 4.5 is 200K-only: the global 1m preference must degrade to 200K, keep
+	// the canonical bare id, and never throw or fabricate [1m].
+	for (const mode of ["auto", "200k", "1m"]) {
+		const id = claudeCodeModelId({ id: "claude-haiku-4-5" }, settings(mode));
+		assert.equal(id, "claude-haiku-4-5", `haiku ${mode} keeps canonical id`);
+		assert.ok(!id.includes("1m"), `haiku ${mode} never fabricates [1m]`);
+	}
+	// Opus 4.7 is 1M-only: the global 200k preference must degrade to its 1M runtime.
+	assert.equal(claudeCodeModelId({ id: "claude-opus-4-7" }, settings("200k")), "claude-opus-4-7");
+	assert.equal(claudeCodeModelId({ id: "claude-opus-4-7" }, settings("auto")), "claude-opus-4-7");
+});
+
+test("dual-window models still honor the global preference (fix does not flatten to a default window)", () => {
+	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8" }, settings("1m")), "claude-opus-4-8[1m]");
+	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8" }, settings("200k")), "claude-opus-4-8");
+	assert.equal(claudeCodeModelId({ id: "claude-fable-5" }, settings("1m")), "claude-fable-5[1m]");
+	assert.equal(claudeCodeModelId({ id: "claude-fable-5" }, settings("200k")), "claude-fable-5");
+});
+
+test("provider.contextWindow=1m + Haiku 4.5: registered window stays 200000 and cli id stays claude-haiku-4-5", () => {
+	const registered = byId("1m")["claude-haiku-4-5"];
+	assert.equal(registered.contextWindow, 200_000);
+	let cli;
+	assert.doesNotThrow(() => { cli = claudeCodeModelId(registered, settings("1m")); });
+	assert.equal(cli, "claude-haiku-4-5");
 });

@@ -188,7 +188,7 @@ You can also bake it into a skill or AGENTS.md, e.g. *"Always call AskClaude to 
 | `prompt` | string | The question or task for Claude Code. |
 | `mode` | `read` (default), `none`, `full` | `read` = read files + web; `full` = read/write/bash. Lock `full` out with `allowFullMode: false`. |
 | `model` | `opus` (default), `sonnet`, `haiku`, or a full id | Which Claude model handles the delegation. |
-| `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` | Effort level. |
+| `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | Effort level. |
 | `isolated` | boolean (default `false`) | When `true`, Claude gets a clean session with no conversation history. |
 
 ## Configuration reference
