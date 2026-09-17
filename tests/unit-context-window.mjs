@@ -61,7 +61,7 @@ test("auto (Pro): 15 entries, and no base model emits two entries for the same w
 	const list = variants("auto");
 	assert.equal(list.length, 15);
 	for (const base of MODELS.map((mm) => mm.id)) {
-		const windows = list.filter((v) => v.id === base || v.id.startsWith(`${base}-`)).map((v) => v.contextWindow);
+		const windows = list.filter((v) => parseVariantId(v.id).baseId === base).map((v) => v.contextWindow);
 		assert.equal(new Set(windows).size, windows.length, `${base} has duplicate windows`);
 	}
 });
