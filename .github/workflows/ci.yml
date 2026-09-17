@@ -23,6 +23,15 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Show Claude Agent SDK parity
+        run: node -e 'const p=require("./node_modules/@anthropic-ai/claude-agent-sdk/package.json"); console.log(`claude-agent-sdk=${p.version} claudeCodeVersion=${p.claudeCodeVersion}`)'
+
+      - name: Upload regenerated lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: regenerated-bun-lock
+          path: bun.lock
+
       - name: Typecheck
         run: bun run typecheck
 
