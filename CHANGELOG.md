@@ -22,6 +22,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Changed
+- Upgraded `@anthropic-ai/claude-agent-sdk` to `^0.3.274`, whose bundled Claude
+  Code runtime is 2.1.274, so newly promoted Fable 5.1 works without requiring
+  a separate system CLI override. Companion Anthropic/MCP/Zod dependencies are
+  aligned with the SDK's current peer requirements; `pathToClaudeCodeExecutable`
+  remains available as an explicit override.
 - Promoted Opus 5 and Fable 5.1 from conservative dynamic registration to
   measured Claude Code runtime overrides. Verified with Claude Code 2.1.274:
   bare `claude-opus-5` serves 200K and `claude-opus-5[1m]` serves 1M; bare
