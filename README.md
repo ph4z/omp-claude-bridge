@@ -224,7 +224,7 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 | `name` | `"AskClaude"` | Override the tool's OMP-side name. |
 | `label` | `"Ask Claude Code"` | Override the TUI label. |
 | `description` | — | Override the tool description shown to the model. |
-| `defaultMode` | `"read"` | `"read`, `none`, or `full`. |
+| `defaultMode` | `"read"` | `read`, `none`, or `full`. |
 | `defaultIsolated` | `false` | Start each call in a fresh session. |
 | `allowFullMode` | `true` | Allow `mode: "full"`; set `false` to lock it out. |
 | `appendSkills` | `true` | Forward OMP's skills block into the system prompt. |
