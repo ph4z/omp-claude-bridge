@@ -156,7 +156,8 @@ test("Fable 5.1 and Opus 5 are discovered from the bundled OMP catalogue", () =>
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-1");
 	assert.equal(resolveModel(models, "opus").id, "claude-opus-5");
 
-	// Registered context sizes come from the catalogue, not local tables.
+	// Base discovery still preserves catalogue metadata; measured runtime policy
+	// is applied later by buildVariantModels.
 	for (const id of ["claude-fable-5-1", "claude-opus-5"]) {
 		const registered = models.find((m) => m.id === id);
 		const catalogModel = catalog.find((m) => m.id === id);
@@ -166,33 +167,33 @@ test("Fable 5.1 and Opus 5 are discovered from the bundled OMP catalogue", () =>
 	}
 });
 
-test("newly discovered model ids never appear as exact-id literals in models.ts", () => {
+test("future revisions remain dynamically discovered without exact-id source edits", () => {
 	const source = readFileSync(new URL("../src/models.ts", import.meta.url), "utf8");
-	assert.ok(!source.includes("claude-fable-5-1"));
-	assert.ok(!source.includes("claude-opus-5"));
+	assert.ok(!source.includes("claude-fable-5-2"));
+	assert.ok(!source.includes("claude-opus-5-1"));
 });
 
 // --- Context-window policy for dynamically discovered models ---
 
-test("auto: a dynamic unmeasured model gets one canonical entry capped at 200K", () => {
-	const models = buildModels([catalogEntry("claude-fable-5-1", { name: "Claude Fable 5.1" })]);
+test("auto: a future unmeasured model gets one canonical entry capped at 200K", () => {
+	const models = buildModels([catalogEntry("claude-fable-5-2", { name: "Claude Fable 5.2" })]);
 	const variants = buildVariantModels(models, settings("auto"));
 	assert.equal(variants.length, 1);
-	assert.equal(variants[0].id, "claude-fable-5-1");
+	assert.equal(variants[0].id, "claude-fable-5-2");
 	assert.equal(variants[0].contextWindow, 200_000);
-	assert.equal(variants[0].name, "Claude Fable 5.1 (200K)");
+	assert.equal(variants[0].name, "Claude Fable 5.2 (200K)");
 	// The canonical id goes to Claude Code unchanged — no fabricated [1m].
-	assert.equal(claudeCodeModelId(variants[0], settings("auto")), "claude-fable-5-1");
+	assert.equal(claudeCodeModelId(variants[0], settings("auto")), "claude-fable-5-2");
 });
 
-test("forced modes clamp a dynamic model's window but never rewrite its id", () => {
-	const models = buildModels([catalogEntry("claude-fable-5-1")]);
+test("forced modes clamp a future unmeasured model's window but never rewrite its id", () => {
+	const models = buildModels([catalogEntry("claude-fable-5-2")]);
 
 	const forced200k = buildVariantModels(models, settings("200k"));
 	assert.equal(forced200k.length, 1);
-	assert.equal(forced200k[0].id, "claude-fable-5-1");
+	assert.equal(forced200k[0].id, "claude-fable-5-2");
 	assert.equal(forced200k[0].contextWindow, 200_000);
-	assert.equal(claudeCodeModelId(forced200k[0], settings("200k")), "claude-fable-5-1");
+	assert.equal(claudeCodeModelId(forced200k[0], settings("200k")), "claude-fable-5-2");
 
 	const forced1m = buildVariantModels(models, settings("1m"));
 	assert.equal(forced1m.length, 0);
@@ -206,15 +207,14 @@ test("1m: a dynamic model whose catalogue window is below 1M is hidden", () => {
 	assert.equal(auto[0].contextWindow, 200_000);
 });
 
-test("dynamic models never emit -1m/-200k variant ids alongside override models", () => {
-	const models = buildModels([catalogEntry("claude-fable-5-1"), catalogEntry("claude-fable-5")]);
+test("future dynamic models never emit -1m/-200k variant ids alongside override models", () => {
+	const models = buildModels([catalogEntry("claude-fable-5-2"), catalogEntry("claude-fable-5")]);
 	const variants = buildVariantModels(models, settings("auto"));
-	assert.deepEqual(variants.map((m) => m.id), ["claude-fable-5-1", "claude-fable-5", "claude-fable-5-1m"]);
+	assert.deepEqual(variants.map((m) => m.id), ["claude-fable-5-2", "claude-fable-5", "claude-fable-5-1m"]);
 	// Override models keep their measured behavior: bare Fable 5 serves 200K.
 	assert.equal(variants.find((m) => m.id === "claude-fable-5").contextWindow, 200_000);
 	assert.equal(claudeCodeModelId(variants.find((m) => m.id === "claude-fable-5-1m"), settings("auto")), "claude-fable-5[1m]");
 });
-
 
 // --- Model-aware reasoning effort mapping ---
 
@@ -250,12 +250,12 @@ test("thinking effortMap is honored before sending the wire effort", () => {
 	assert.equal(mapReasoningToClaudeEffort(mapped, "xhigh"), "high");
 });
 
-test("dynamic context safety never promotes an unmeasured catalogue model above 200K", () => {
-	const oneMillion = buildModels([catalogEntry("claude-opus-5", { contextWindow: 1_000_000 })]);
+test("dynamic context safety never promotes a future unmeasured catalogue model above 200K", () => {
+	const oneMillion = buildModels([catalogEntry("claude-opus-6", { contextWindow: 1_000_000 })]);
 	const auto = buildVariantModels(oneMillion, settings("auto"));
 	assert.equal(auto.length, 1);
 	assert.equal(auto[0].contextWindow, 200_000);
-	assert.equal(claudeCodeModelId(auto[0], settings("auto")), "claude-opus-5");
+	assert.equal(claudeCodeModelId(auto[0], settings("auto")), "claude-opus-6");
 	assert.equal(buildVariantModels(oneMillion, settings("1m")).length, 0);
 
 	const smaller = buildModels([catalogEntry("claude-opus-6", { contextWindow: 128_000 })]);
