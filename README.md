@@ -94,7 +94,7 @@ Switching window is just picking the other entry — no config edit, no reload. 
 
 ### Default window
 
-The **unsuffixed** id (e.g. `claude-opus-4-8`) maps to a default window; the other window gets a `-1m` / `-200k` suffixed id. `provider.contextWindow` in `~/.omp/agent/claude-bridge.json` picks that default — it no longer hides models, it only decides which window is unsuffixed:
+The **unsuffixed** id (e.g. `claude-opus-4-8`) maps to a default window; the other window gets a `-1m` / `-200k` suffixed id. `provider.contextWindow` in `~/.omp/agent/claude-bridge.json` picks that default — it no longer hides measured models, it only decides which available window is unsuffixed:
 
 ```json
 {
@@ -107,10 +107,10 @@ The **unsuffixed** id (e.g. `claude-opus-4-8`) maps to a default window; the oth
 | Mode | Default (unsuffixed) window |
 | ---- | -------- |
 | `"auto"` *(default)* | Per-model measured default. Respects `plan` and `longContextExtraUsage`. |
-| `"1m"` | 1M where the model has a 1M runtime, else its only window. |
-| `"200k"` | 200K where the model has a 200K runtime, else its only window. |
+| `"1m"` | 1M where the model has a measured 1M runtime, else its only window. |
+| `"200k"` | 200K where the model has a measured 200K runtime, else its only window. |
 
-Both windows stay in the picker regardless of this setting (wherever a runtime exists); it only changes which one is the plain, unsuffixed id. So `modelRoles` / `enabledModels` that reference `claude-bridge/claude-opus-4-8` keep working and follow the default.
+Both measured windows stay in the picker regardless of this setting (wherever a runtime exists); it only changes which one is the plain, unsuffixed id. So `modelRoles` / `enabledModels` that reference a bare measured model id keep working and follow the configured default.
 
 ### Windows offered per model
 
@@ -118,10 +118,12 @@ Models with **measured** Claude Code runtime behavior expand into one picker ent
 
 | Model | 200K entry | 1M entry | `auto` default |
 | ----- | :--------: | :------: | :------------: |
+| `claude-fable-5-1` | — | ✓ | 1M |
+| `claude-fable-5` | ✓ | ✓ | 200K |
+| `claude-opus-5` | ✓ | ✓ | 200K |
 | `claude-opus-4-8` | ✓ | ✓ | 1M |
 | `claude-opus-4-7` | — | ✓ | 1M |
 | `claude-opus-4-6` | ✓ | ✓ | 200K¹ |
-| `claude-fable-5` | ✓ | ✓ | 200K |
 | `claude-sonnet-5` | ✓ | ✓ | 1M |
 | `claude-sonnet-4-6` | ✓ | ✓ | 200K² |
 | `claude-haiku-4-5` | ✓ | — | 200K |
@@ -129,9 +131,9 @@ Models with **measured** Claude Code runtime behavior expand into one picker ent
 ¹ Opus 4.6's `auto` default is 1M when `plan: "max"` or `longContextExtraUsage: true`.
 ² Sonnet 4.6's `auto` default is 1M when `longContextExtraUsage: true`.
 
-The suffixed alternate exists only for the window that isn't the default — e.g. under `auto` you get `claude-opus-4-8` (1M) + `claude-opus-4-8-200k`, and under `"200k"` you get `claude-opus-4-8` (200K) + `claude-opus-4-8-1m`.
+The suffixed alternate exists only for the window that isn't the default — e.g. under `auto` you get `claude-opus-5` (200K) + `claude-opus-5-1m` (1M). Under `"1m"`, the same model becomes `claude-opus-5` (1M) + `claude-opus-5-200k` (200K). Single-window models such as Fable 5.1 or Haiku 4.5 stay unsuffixed regardless of the global preference.
 
-**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. Fable 5.1, Opus 5) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged, but the registered window is conservatively capped at **200K** (or lower if the catalogue says lower) until that bare-id runtime is measured. Forced `1m` hides unmeasured models rather than claiming an unverified 1M runtime.
+**Dynamically discovered** models (any newer revision the bridge has not measured yet — e.g. a future Fable 5.2 or Opus 5.1) get exactly **one canonical entry**: the bare model id is sent to Claude Code unchanged, but the registered window is conservatively capped at **200K** (or lower if the catalogue says lower) until that runtime is measured. Forced `1m` hides unmeasured models rather than claiming an unverified 1M runtime.
 
 > Forcing 1M is a *request*: some models may still be **served** 200K by your subscription entitlement. Set `CLAUDE_BRIDGE_DEBUG=1` to log the served window (see [Debugging](#debugging)).
 
@@ -139,12 +141,12 @@ The suffixed alternate exists only for the window that isn't the default — e.g
 
 ## Models
 
-The picker is **discovered dynamically from OMP's Anthropic model catalogue** — there is no hard-coded model list to update when Anthropic ships a new revision. The bridge:
+The picker is **discovered dynamically from OMP's Anthropic model catalogue** — there is no hard-coded discovery list to update when Anthropic ships a new revision. The bridge:
 
 1. reads OMP's Anthropic catalogue at startup (synchronously, no network);
 2. keeps entries from the validated Claude families — **fable**, **opus**, **sonnet**, **haiku** — at or above each family's validated baseline (Fable ≥ 5, Opus ≥ 4.6, Sonnet ≥ 4.6, Haiku ≥ 4.5), skipping dated snapshot ids;
 3. orders each family newest-revision-first, so a partial name like `opus` always resolves to the newest Opus;
-4. preserves the catalogue metadata (context window, max tokens, thinking/effort capabilities, input modes) and registers the result.
+4. preserves the catalogue metadata, then applies a small exact-id runtime override table only for models whose Claude Code window behavior has actually been measured.
 
 When your installed OMP catalogue gains a new revision of a supported family (say Fable 5.2), it appears in `/model` automatically after restart — no bridge update needed. A completely new family is only added once it has been validated against the Claude Code runtime.
 
@@ -152,10 +154,11 @@ With the current OMP catalogue and default `contextWindow: "auto"` you get, e.g.
 
 | Picker id (auto) | Window |
 | --------- | ------ |
-| `claude-bridge/claude-fable-5-1` | 200K (runtime unmeasured; catalogue advertises 1M) |
+| `claude-bridge/claude-fable-5-1` | 1M |
 | `claude-bridge/claude-fable-5` | 200K |
 | `claude-bridge/claude-fable-5-1m` | 1M |
-| `claude-bridge/claude-opus-5` | 200K (runtime unmeasured; catalogue advertises 1M) |
+| `claude-bridge/claude-opus-5` | 200K |
+| `claude-bridge/claude-opus-5-1m` | 1M |
 | `claude-bridge/claude-opus-4-8` | 1M |
 | `claude-bridge/claude-opus-4-8-200k` | 200K |
 | `claude-bridge/claude-opus-4-7` | 1M |
@@ -166,6 +169,8 @@ With the current OMP catalogue and default `contextWindow: "auto"` you get, e.g.
 | `claude-bridge/claude-sonnet-4-6` | 200K |
 | `claude-bridge/claude-sonnet-4-6-1m` | 1M |
 | `claude-bridge/claude-haiku-4-5` | 200K (cheapest) |
+
+Fable 5.1 requires Claude Code 2.1.251 or newer. If the Claude Code bundled with your installed Agent SDK is older, point `provider.pathToClaudeCodeExecutable` at a current stable CLI path such as `~/.local/bin/claude`.
 
 Bash commands issued by Claude Code get a 120-second default timeout (matching Claude Code's default), since OMP's bash has no timeout by default.
 
@@ -219,7 +224,7 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 | `name` | `"AskClaude"` | Override the tool's OMP-side name. |
 | `label` | `"Ask Claude Code"` | Override the TUI label. |
 | `description` | — | Override the tool description shown to the model. |
-| `defaultMode` | `"read"` | `"read"`, `"none"`, or `"full"`. |
+| `defaultMode` | `"read"` | `read`, `none`, or `full`. |
 | `defaultIsolated` | `false` | Start each call in a fresh session. |
 | `allowFullMode` | `true` | Allow `mode: "full"`; set `false` to lock it out. |
 | `appendSkills` | `true` | Forward OMP's skills block into the system prompt. |
@@ -234,7 +239,7 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 | `appendSystemPrompt` | `true` | Append OMP's AGENTS.md and skills. |
 | `settingSources` | — | Claude Code filesystem settings to load; only applied when `appendSystemPrompt: false`. |
 | `strictMcpConfig` | `true` | Block MCP servers from `~/.claude.json` / `.mcp.json`. Cloud MCP is always blocked. |
-| `pathToClaudeCodeExecutable` | — | Path to the `claude` binary, if the bundled one can't run on your OS/filesystem. |
+| `pathToClaudeCodeExecutable` | — | Path to the `claude` binary, if the bundled one is too old for a model or can't run on your OS/filesystem. Prefer a stable launcher/symlink path such as `~/.local/bin/claude`. |
 
 ## How it works
 

@@ -174,13 +174,15 @@ const ONE_M_CONTEXT = 1_000_000;
 // place exact ids are allowed. This is a runtime-override table, not a
 // discovery allowlist: models absent from it are still registered and follow
 // the catalogue-window path in resolveDynamicRuntimeModel. Do not infer these
-// entries from the catalogue's advertised contextWindow: bare Opus 4.7 serves
-// 1M, bare Opus 4.8 does not, bare Fable 5 serves 200K while claude-fable-5[1m]
-// serves 1M, and [1m] entitlement differs by model. A newly discovered model
-// gets an entry here only once its runtime behavior has been measured.
+// entries from the catalogue's advertised contextWindow: bare Opus 5 serves
+// 200K while claude-opus-5[1m] serves 1M; bare Fable 5.1 serves 1M with no
+// measured 200K runtime; bare Opus 4.7 serves 1M; and bare Fable 5 serves 200K
+// while claude-fable-5[1m] serves 1M. A newly discovered model gets an entry
+// here only once its runtime behavior has been measured.
 const RUNTIME_OVERRIDE_IDS: Record<string, true> = {
-	"claude-opus-4-8": true, "claude-opus-4-7": true, "claude-opus-4-6": true,
-	"claude-fable-5": true, "claude-sonnet-5": true, "claude-sonnet-4-6": true, "claude-haiku-4-5": true,
+	"claude-opus-5": true, "claude-opus-4-8": true, "claude-opus-4-7": true, "claude-opus-4-6": true,
+	"claude-fable-5-1": true, "claude-fable-5": true,
+	"claude-sonnet-5": true, "claude-sonnet-4-6": true, "claude-haiku-4-5": true,
 };
 
 export function hasRuntimeOverride(modelId: string): boolean {
@@ -195,10 +197,11 @@ type CatalogModel = { id: string; contextWindow?: number | null };
 // registers conservatively at no more than 200K until that bare-id runtime has
 // been measured. The global 1m/200k preference selects the window where the
 // override model actually supports it, but never forces an impossible runtime
-// onto a single-window model (e.g. Haiku 4.5 is 200K-only, Opus 4.7 is 1M-only):
-// such a model falls back to its sole supported window. Returns null only for the
-// dynamic (unmeasured) forced-1M case or when catalogue context metadata is
-// absent; those cases must not be guessed by a context-safe router.
+// onto a single-window model (e.g. Haiku 4.5 is 200K-only, Fable 5.1 and Opus
+// 4.7 are 1M-only): such a model falls back to its sole supported window.
+// Returns null only for the dynamic (unmeasured) forced-1M case or when
+// catalogue context metadata is absent; those cases must not be guessed by a
+// context-safe router.
 export function resolveClaudeCodeRuntimeModel(model: CatalogModel, settings: LongContextSettings): ClaudeCodeRuntimeModel | null {
 	if (hasRuntimeOverride(model.id)) {
 		if (settings.contextWindow === "auto") return resolveAutoRuntimeModel(model.id, settings);
@@ -255,6 +258,8 @@ function resolveDynamicRuntimeModel(model: CatalogModel, mode: ContextWindowMode
 
 function resolveAutoRuntimeModel(modelId: string, settings: LongContextSettings): ClaudeCodeRuntimeModel {
 	switch (modelId) {
+		case "claude-opus-5":
+			return { cliModelId: "claude-opus-5", contextWindow: TWO_HUNDRED_K_CONTEXT };
 		case "claude-opus-4-8":
 			return { cliModelId: "claude-opus-4-8[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-7":
@@ -266,6 +271,8 @@ function resolveAutoRuntimeModel(modelId: string, settings: LongContextSettings)
 				contextWindow: useOneM ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
 			};
 		}
+		case "claude-fable-5-1":
+			return { cliModelId: "claude-fable-5-1", contextWindow: ONE_M_CONTEXT };
 		case "claude-fable-5":
 			return { cliModelId: "claude-fable-5", contextWindow: TWO_HUNDRED_K_CONTEXT };
 		case "claude-sonnet-5":
@@ -284,12 +291,16 @@ function resolveAutoRuntimeModel(modelId: string, settings: LongContextSettings)
 
 function resolveForcedOneMRuntimeModel(modelId: string): ClaudeCodeRuntimeModel | null {
 	switch (modelId) {
+		case "claude-opus-5":
+			return { cliModelId: "claude-opus-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-8":
 			return { cliModelId: "claude-opus-4-8[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-7":
 			return { cliModelId: "claude-opus-4-7", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-6":
 			return { cliModelId: "claude-opus-4-6[1m]", contextWindow: ONE_M_CONTEXT };
+		case "claude-fable-5-1":
+			return { cliModelId: "claude-fable-5-1", contextWindow: ONE_M_CONTEXT };
 		case "claude-fable-5":
 			return { cliModelId: "claude-fable-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-sonnet-5":
@@ -303,12 +314,16 @@ function resolveForcedOneMRuntimeModel(modelId: string): ClaudeCodeRuntimeModel 
 
 function resolveForcedTwoHundredKRuntimeModel(modelId: string): ClaudeCodeRuntimeModel | null {
 	switch (modelId) {
+		case "claude-opus-5":
+			return { cliModelId: "claude-opus-5", contextWindow: TWO_HUNDRED_K_CONTEXT };
 		case "claude-opus-4-8":
 			return { cliModelId: "claude-opus-4-8", contextWindow: TWO_HUNDRED_K_CONTEXT };
 		case "claude-opus-4-7":
 			return null;
 		case "claude-opus-4-6":
 			return { cliModelId: "claude-opus-4-6", contextWindow: TWO_HUNDRED_K_CONTEXT };
+		case "claude-fable-5-1":
+			return null;
 		case "claude-fable-5":
 			return { cliModelId: "claude-fable-5", contextWindow: TWO_HUNDRED_K_CONTEXT };
 		case "claude-sonnet-5":
@@ -391,7 +406,7 @@ export function buildVariantModels<T extends { id: string; name: string; context
 
 		// The config default decides which window is unsuffixed; fall back to the sole
 		// available window when the preferred one has no runtime (e.g. Haiku under
-		// "1m", Opus 4.7 under "200k").
+		// "1m", Fable 5.1 / Opus 4.7 under "200k").
 		const defaultRuntime = resolveClaudeCodeRuntimeModel(m, settings);
 		const preferredKind: "1m" | "200k" | undefined = defaultRuntime == null
 			? undefined
