@@ -22,6 +22,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Changed
+- Promoted Opus 5 and Fable 5.1 from conservative dynamic registration to
+  measured Claude Code runtime overrides. Verified with Claude Code 2.1.274:
+  bare `claude-opus-5` serves 200K and `claude-opus-5[1m]` serves 1M; bare
+  `claude-fable-5-1` serves 1M and no separate 200K runtime is claimed. The
+  picker now exposes the measured windows instead of capping both models at
+  the unmeasured 200K fallback.
 - Models without measured Claude Code runtime behavior get a single canonical
   picker entry: the bare id is sent to Claude Code and the registered window is
   conservatively capped at 200K until measured; forced `1m` hides them instead
@@ -37,11 +43,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - Single-window measured models no longer throw when the global
   `provider.contextWindow` preference names the other window. A model that
-  supports only one Claude Code runtime (Haiku 4.5 is 200K-only, Opus 4.7 is
-  1M-only) now degrades to its sole supported window instead of fabricating an
-  impossible `[1m]` runtime or raising. The runtime is derived from the model's
-  measured windows so any future single-window model behaves the same; dual-window
-  models still honor the global preference.
+  supports only one Claude Code runtime (Haiku 4.5 is 200K-only; Fable 5.1 and
+  Opus 4.7 are 1M-only) now degrades to its sole supported window instead of
+  fabricating an impossible runtime or raising. The runtime is derived from the
+  model's measured windows so any future single-window model behaves the same;
+  dual-window models still honor the global preference.
 
 ## [0.8.1] - 2026-07-07
 
