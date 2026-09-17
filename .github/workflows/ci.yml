@@ -7,9 +7,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     name: Typecheck & test
@@ -17,8 +14,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -27,20 +22,6 @@ jobs:
 
       - name: Install dependencies
         run: bun install
-
-      - name: Show Claude Agent SDK parity
-        run: node -e 'const p=require("./node_modules/@anthropic-ai/claude-agent-sdk/package.json"); console.log(`claude-agent-sdk=${p.version} claudeCodeVersion=${p.claudeCodeVersion}`)'
-
-      - name: Commit regenerated lockfile
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if ! git diff --quiet -- bun.lock; then
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add bun.lock
-            git commit -m "chore: refresh bun lockfile"
-            git push origin HEAD:${{ github.head_ref }}
-          fi
 
       - name: Typecheck
         run: bun run typecheck
