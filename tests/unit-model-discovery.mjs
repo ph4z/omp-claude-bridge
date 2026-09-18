@@ -53,14 +53,29 @@ test("parseClaudeModelId rejects non-Claude, legacy, and snapshot ids", () => {
 	assert.equal(parseClaudeModelId("claude-fable-5[1m]"), null);
 });
 
-test("isSupportedClaudeModel accepts supported families at or above their baseline", () => {
-	for (const id of ["claude-opus-5", "claude-fable-5-1", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-6-2"]) {
+test("isSupportedClaudeModel accepts any canonical family from the Anthropic catalogue shape", () => {
+	for (const id of [
+		"claude-opus-5",
+		"claude-fable-5-1",
+		"claude-mythos-5",
+		"claude-mythos-5-1",
+		"claude-haiku-4-5",
+		"claude-opus-4-1",
+		"claude-aurora-7-2",
+	]) {
 		assert.equal(isSupportedClaudeModel(id), true, id);
 	}
 });
 
-test("isSupportedClaudeModel rejects unvalidated families and below-baseline revisions", () => {
-	for (const id of ["claude-mythos-5", "claude-opus-4-5", "claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-0"]) {
+test("isSupportedClaudeModel rejects only non-canonical/legacy/snapshot ids", () => {
+	for (const id of [
+		"gpt-6",
+		"claude",
+		"claude-3-5-sonnet-20241022",
+		"claude-opus-4-5-20251101",
+		"claude-mythos-latest",
+		"claude-opus-5[1m]",
+	]) {
 		assert.equal(isSupportedClaudeModel(id), false, id);
 	}
 });
@@ -92,15 +107,17 @@ const SYNTHETIC_CATALOG = [
 	catalogEntry("claude-3-5-sonnet-20241022"),
 ];
 
-test("buildModels filters to supported models and sorts newest revision first per family", () => {
+test("buildModels accepts catalogue families dynamically and sorts newest revision first per family", () => {
 	assert.deepEqual(buildModels(SYNTHETIC_CATALOG).map((m) => m.id), [
 		"claude-fable-5-1",
 		"claude-fable-5",
+		"claude-haiku-4-5",
+		"claude-mythos-5",
 		"claude-opus-5",
 		"claude-opus-4-8",
 		"claude-opus-4-7",
+		"claude-opus-4-5",
 		"claude-sonnet-5",
-		"claude-haiku-4-5",
 	]);
 });
 
@@ -110,13 +127,19 @@ test("partial names resolve to the newest revision; exact ids stay exact", () =>
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-1");
 	assert.equal(resolveModel(models, "claude-fable-5").id, "claude-fable-5");
 	assert.equal(resolveModel(models, "haiku").id, "claude-haiku-4-5");
+	assert.equal(resolveModel(models, "mythos").id, "claude-mythos-5");
 });
 
-test("a synthetic later revision is discovered and ordered first without source edits", () => {
-	const models = buildModels([...SYNTHETIC_CATALOG, catalogEntry("claude-fable-5-2"), catalogEntry("claude-opus-5-1")]);
-	assert.equal(models[0].id, "claude-fable-5-2");
+test("a synthetic later revision and entirely new family are discovered without source edits", () => {
+	const models = buildModels([
+		...SYNTHETIC_CATALOG,
+		catalogEntry("claude-fable-5-2"),
+		catalogEntry("claude-opus-5-1"),
+		catalogEntry("claude-aurora-1"),
+	]);
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-2");
 	assert.equal(resolveModel(models, "opus").id, "claude-opus-5-1");
+	assert.equal(resolveModel(models, "aurora").id, "claude-aurora-1");
 });
 
 test("projection preserves catalogue metadata and drops source routing fields", () => {
@@ -136,27 +159,37 @@ test("projection preserves catalogue metadata and drops source routing fields", 
 
 // --- Discovery over the real OMP catalogue ---
 
-test("Fable 5.1 and Opus 5 are discovered from the bundled OMP catalogue", () => {
+test("current Anthropic catalogue families, including Mythos, are discovered without a bridge allowlist", () => {
 	const catalog = getBundledModels("anthropic");
 	const models = buildModels(catalog);
 	const ids = models.map((m) => m.id);
 
-	assert.ok(ids.includes("claude-fable-5-1"), `missing claude-fable-5-1 in ${ids}`);
-	assert.ok(ids.includes("claude-opus-5"), `missing claude-opus-5 in ${ids}`);
-	for (const id of ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
-		assert.ok(ids.includes(id), `missing legacy model ${id}`);
+	for (const id of [
+		"claude-fable-5-1",
+		"claude-fable-5",
+		"claude-mythos-5-1",
+		"claude-mythos-5",
+		"claude-opus-5",
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-5",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5",
+	]) {
+		assert.ok(ids.includes(id), `missing current catalogue model ${id}`);
 	}
 	for (const id of ids) {
-		assert.ok(!id.startsWith("claude-mythos"), `unvalidated family leaked: ${id}`);
 		assert.ok(!/\d{4,}/.test(id), `snapshot id leaked: ${id}`);
 	}
 
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-1");
+	assert.equal(resolveModel(models, "mythos").id, "claude-mythos-5-1");
 	assert.equal(resolveModel(models, "opus").id, "claude-opus-5");
 
 	// Discovery preserves catalogue metadata verbatim; the registered window is
 	// that same catalogue capacity (see buildRegisteredModels).
-	for (const id of ["claude-fable-5-1", "claude-opus-5"]) {
+	for (const id of ["claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5"]) {
 		const registered = models.find((m) => m.id === id);
 		const catalogModel = catalog.find((m) => m.id === id);
 		assert.equal(registered.contextWindow, catalogModel.contextWindow, id);
@@ -172,6 +205,8 @@ test("real catalogue: every current model registers its authoritative context wi
 	const EXPECTED = {
 		"claude-fable-5-1": 1_000_000,
 		"claude-fable-5": 1_000_000,
+		"claude-mythos-5-1": 1_000_000,
+		"claude-mythos-5": 1_000_000,
 		"claude-opus-5": 1_000_000,
 		"claude-opus-4-8": 1_000_000,
 		"claude-opus-4-7": 1_000_000,
@@ -190,10 +225,12 @@ test("real catalogue: every current model registers its authoritative context wi
 	}
 });
 
-test("future revisions remain dynamically discovered without exact-id source edits", () => {
+test("future revisions and future families remain dynamic with no allowlist in source", () => {
 	const source = readFileSync(new URL("../src/models.ts", import.meta.url), "utf8");
+	assert.ok(!source.includes("SUPPORTED_FAMILIES"));
 	assert.ok(!source.includes("claude-fable-5-2"));
 	assert.ok(!source.includes("claude-opus-5-1"));
+	assert.ok(!source.includes("claude-aurora-1"));
 });
 
 // --- Context-window resolution for dynamically discovered models -------------
