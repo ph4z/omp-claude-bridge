@@ -44,19 +44,25 @@ export function extractAgentsAppend(): string | undefined {
 	}
 }
 
-// Render project context files (AGENTS.md/CLAUDE.md and friends) for forwarding
-// behind Claude Code's preset. Deduplicates by path so an inherited parent and
-// its child never emit the same file twice, and drops empties.
+// Render the exact context files OMP loaded for this agent behind Claude Code's
+// preset. Keep paths: directory-specific context is meaningful, and flattening
+// several files into anonymous prose loses precedence/provenance.
 export function formatProjectContext(contextFiles: Array<{ path: string; content: string }>): string | undefined {
 	const seen = new Set<string>();
-	const parts: string[] = [];
+	const files: Array<{ path: string; content: string }> = [];
 	for (const file of contextFiles) {
 		if (seen.has(file.path)) continue;
-		seen.add(file.path);
 		const content = file.content.trim();
-		if (content) parts.push(content);
+		if (!content) continue;
+		seen.add(file.path);
+		files.push({ path: file.path, content });
 	}
-	return parts.length > 0 ? parts.join("\n\n") : undefined;
+	if (files.length === 0) return undefined;
+
+	const body = files
+		.map(({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`)
+		.join("\n\n");
+	return `<project_context>\n\nProject-specific instructions and guidelines:\n\n${body}\n\n</project_context>`;
 }
 
 export function sanitizeAgentsContent(content: string): string {
