@@ -171,6 +171,11 @@ export class PromptCaptures {
 		return this.captures.size;
 	}
 
+	/** Drop all lookup keys and inherited nodes owned only by this registry. */
+	clear(): void {
+		this.captures.clear();
+	}
+
 	/** Recency is by use, not just by record: a parent records once then only
 	 *  resolves, so counting writes alone ages it out behind churning subagent
 	 *  prompts. */
@@ -355,9 +360,11 @@ function projectCustom(capture: PromptCapture, visiting: Set<PromptCapture>): st
 // before_agent_start; the provider callback that later resolves it may run from
 // another instance. A single module-local `new PromptCaptures()` would not see
 // both, so the registry lives in a Symbol.for() global keyed like the shared
-// provider stream. Mirrors that lifecycle: process-global, LRU-bounded, never
-// cleared per session (a child may still need a parent capture after the parent's
-// turn ended).
+// provider stream.
+//
+// The registry is released only when the extension instance that owns the shared
+// provider stream shuts down. Child-session shutdown must NOT clear it while the
+// parent provider callback can still need child captures.
 
 export const PROMPT_CAPTURES_KEY = Symbol.for("claude-bridge:promptCaptures");
 
@@ -372,38 +379,202 @@ export function sharedPromptCaptures(
 	return created;
 }
 
+/** Release the process-global capture registry when its provider owner exits. */
+export function releaseSharedPromptCaptures(
+	captures: PromptCaptures,
+	globalState: Record<symbol, unknown> = globalThis as unknown as Record<symbol, unknown>,
+): boolean {
+	if (globalState[PROMPT_CAPTURES_KEY] !== captures) return false;
+	captures.clear();
+	delete globalState[PROMPT_CAPTURES_KEY];
+	return true;
+}
+
 // --- OMP 18.2.2 assembled-array derivation ---------------------------------
 //
-// OMP exposes only the fully assembled `systemPrompt: string[]` at
-// before_agent_start, so the structured PromptCaptureInput is derived from it.
-// Context files and the skills block are sourced independently by the caller
-// (AGENTS.md walk-up from disk, and skills-block extraction), because OMP bakes
-// them into rendered templates that cannot be cleanly split back out. The one
-// portable part that lives as its own array entry is the subagent block, which
-// carries `§ Role`/`§ Context` (native `task.context`, e.g. PRIOR_PHASE_RESULTS)
-// and is exactly what the old AGENTS+skills-only extraction dropped.
+// OMP 18.2.2 exposes only the final `systemPrompt: string[]` at
+// before_agent_start. It does NOT expose the structured customPrompt,
+// appendSystemPrompt, contextFiles, or skills that built it.
+//
+// Re-reading those inputs from disk is incorrect: a subagent can run in a
+// different cwd/worktree and createAgentSession can supply preloaded context
+// files that differ from a fresh discovery pass. Derivation therefore reads the
+// exact rendered array OMP is about to send.
+//
+// Two OMP layouts matter:
+// - default prompt: generated harness in block 0, project/context + append in a
+//   PROJECT block, and a subagent role/context block when applicable;
+// - custom prompt: block 0 is itself user/project-specific content (custom +
+//   append + rendered context/skills/rules), not the default OMP harness.
+//
+// For the custom layout we keep the non-generated remainder of block 0 as a
+// single portable custom block because OMP 18.2.2 no longer exposes provenance
+// that would let us split customPrompt from appendSystemPrompt losslessly.
 
 /** Verbatim line unique to `subagent-system-prompt.md`; marks the array entry
- *  that holds a subagent's role, assignment context, and plan. */
+ * that holds a subagent's role, assignment context, and plan. */
 export const SUBAGENT_BLOCK_MARKER = "You are operating on a piece of work assigned to you by the main agent.";
 
+const DEFAULT_HARNESS_MARKER = "<conventions>";
+const DEFAULT_SKILLS_MARKER = "Matching skill → MUST read `skill://<name>` first.";
+const CUSTOM_SKILLS_MARKER = "Skills are specialized knowledge. Scan descriptions for your task domain.";
+const LEGACY_SKILLS_MARKER = "The following skills provide specialized instructions for specific tasks.";
+const PROJECT_BLOCK_PREFIX = "PROJECT";
+
+function compactJoin(parts: Array<string | undefined>): string | undefined {
+	const present = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
+	return present.length > 0 ? present.join("\n\n") : undefined;
+}
+
+function isDefaultHarnessBlock(block: string | undefined): boolean {
+	return Boolean(block?.trimStart().startsWith(DEFAULT_HARNESS_MARKER));
+}
+
+function findProjectBlock(assembled: string[]): string | undefined {
+	return assembled.find((part) => part.trimStart().startsWith(`${PROJECT_BLOCK_PREFIX}\n`));
+}
+
+function removeRange(source: string, start: number, end: number): string {
+	return `${source.slice(0, start)}\n${source.slice(end)}`;
+}
+
+function extractTaggedContainer(source: string, open: string, close: string): string | undefined {
+	const start = source.indexOf(open);
+	if (start === -1) return undefined;
+	const end = source.indexOf(close, start + open.length);
+	if (end === -1) return undefined;
+	return source.slice(start, end + close.length);
+}
+
+function parseContextFiles(container: string | undefined): Array<{ path: string; content: string }> {
+	if (!container) return [];
+	const result: Array<{ path: string; content: string }> = [];
+	const seen = new Set<string>();
+	const re = /<file path="([^"]+)">\s*\n?([\s\S]*?)\n?\s*<\/file>/g;
+	for (const match of container.matchAll(re)) {
+		const path = match[1]?.trim();
+		const content = match[2]?.trim();
+		if (!path || !content || seen.has(path)) continue;
+		seen.add(path);
+		result.push({ path, content });
+	}
+	return result;
+}
+
+/** Context files exactly as OMP rendered them for this agent. */
+export function extractRenderedContextFiles(assembled: string[]): Array<{ path: string; content: string }> {
+	const result: Array<{ path: string; content: string }> = [];
+	const seen = new Set<string>();
+
+	for (const block of assembled) {
+		const containers = [
+			extractTaggedContainer(block, "<repo-rules>", "</repo-rules>"),
+			// custom-system-prompt.md nests context files inside <instructions>.
+			extractTaggedContainer(block, "<instructions>", "</instructions>"),
+		];
+		for (const container of containers) {
+			for (const file of parseContextFiles(container)) {
+				if (seen.has(file.path)) continue;
+				seen.add(file.path);
+				result.push(file);
+			}
+		}
+	}
+	return result;
+}
+
+function extractSkillsFromBlock(block: string): string | undefined {
+	for (const marker of [DEFAULT_SKILLS_MARKER, CUSTOM_SKILLS_MARKER, LEGACY_SKILLS_MARKER]) {
+		const start = block.indexOf(marker);
+		if (start === -1) continue;
+		const closeTag = marker === LEGACY_SKILLS_MARKER ? "</available_skills>" : "</skills>";
+		const end = block.indexOf(closeTag, start);
+		if (end === -1) continue;
+		return block.slice(start, end + closeTag.length).trim();
+	}
+	return undefined;
+}
+
+/** Skills catalogue/instructions exactly as rendered by supported OMP layouts. */
+export function extractRenderedSkillsBlock(assembled: string[]): string | undefined {
+	for (const block of assembled) {
+		const skills = extractSkillsFromBlock(block);
+		if (skills) return skills;
+	}
+	return undefined;
+}
+
 /** The subagent role/context/plan block from an assembled prompt array, or
- *  undefined for a main-agent prompt that has no such block. */
+ * undefined for a main-agent prompt that has no such block. */
 export function extractSubagentBlock(assembled: string[]): string | undefined {
 	const block = assembled.find((part) => part.includes(SUBAGENT_BLOCK_MARKER));
 	return block ? block.trim() : undefined;
 }
 
-/** Build the structured capture input from OMP's assembled prompt plus the
- *  independently-sourced portable sections. */
-export function deriveCaptureInput(
-	assembled: string[],
-	sources: { contextFiles?: Array<{ path: string; content: string }>; skillsBlock?: string; append?: string },
-): PromptCaptureInput {
+/** The append text from OMP's default project-prompt.md.
+ *
+ * In the default layout, project-prompt.md ends its generated content at the
+ * stable </critical> block and renders appendPrompt immediately afterwards.
+ */
+export function extractDefaultAppendBlock(assembled: string[]): string | undefined {
+	const project = findProjectBlock(assembled);
+	if (!project) return undefined;
+	const marker = "</critical>";
+	const boundary = project.indexOf(marker);
+	if (boundary === -1) return undefined;
+	const append = project.slice(boundary + marker.length).trim();
+	return append || undefined;
+}
+
+/**
+ * Portable content from OMP's custom-system-prompt.md.
+ *
+ * The custom template replaces the normal OMP harness. Preserve its user/project
+ * instructions, but remove the generated <project> container and rendered skills
+ * catalogue because those are captured structurally and re-rendered once.
+ *
+ * OMP 18.2.2 concatenates SYSTEM.md/customPrompt/appendPrompt without provenance,
+ * so they intentionally remain one portable block.
+ */
+export function extractCustomPromptBlock(assembled: string[]): string | undefined {
+	const first = assembled[0]?.trim();
+	if (!first || isDefaultHarnessBlock(first) || first.includes(SUBAGENT_BLOCK_MARKER)) return undefined;
+
+	let portable = first;
+	const projectStart = portable.indexOf("<project>");
+	if (projectStart !== -1) {
+		const projectEnd = portable.indexOf("</project>", projectStart);
+		if (projectEnd !== -1) {
+			portable = removeRange(portable, projectStart, projectEnd + "</project>".length);
+		}
+	}
+
+	const skills = extractSkillsFromBlock(portable);
+	if (skills) {
+		const skillStart = portable.indexOf(skills);
+		if (skillStart !== -1) {
+			portable = removeRange(portable, skillStart, skillStart + skills.length);
+		}
+	}
+
+	const trimmed = portable.trim();
+	return trimmed || undefined;
+}
+
+/** Build the structured capture directly from the exact OMP-rendered array. */
+export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
+	const customPrompt = extractCustomPromptBlock(assembled);
+	const subagent = extractSubagentBlock(assembled);
+	const contextFiles = extractRenderedContextFiles(assembled);
+	const skillsBlock = extractRenderedSkillsBlock(assembled);
+
 	return {
-		custom: extractSubagentBlock(assembled),
-		append: sources.append,
-		contextFiles: sources.contextFiles ?? [],
-		skills: sources.skillsBlock ? [{ id: "omp-skills", content: sources.skillsBlock }] : [],
+		custom: compactJoin([customPrompt, subagent]),
+		// Default OMP layout exposes appendPrompt at the tail of project-prompt.md.
+		// Custom layout already carries it inside customPrompt because OMP 18.2.2
+		// does not expose the boundary between custom and append text.
+		append: customPrompt ? undefined : extractDefaultAppendBlock(assembled),
+		contextFiles,
+		skills: skillsBlock ? [{ id: "omp-skills", content: skillsBlock }] : [],
 	};
 }
