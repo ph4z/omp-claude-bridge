@@ -34,8 +34,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Claude Code's preset exactly once. The process-global capture registry lets a
   child record under one extension instance and resolve from the parent-owned
   provider callback, and is cleared only when that provider owner shuts down.
-  Unknown prompts fail closed instead of silently dropping instructions.
-  Context-window/model policy is unchanged. See
+  Unknown prompts fail closed instead of silently dropping instructions. See
   [`src/prompt-capture.ts`](src/prompt-capture.ts).
 
 ### Changed
@@ -44,17 +43,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a separate system CLI override. Companion Anthropic/MCP/Zod dependencies are
   aligned with the SDK's current peer requirements; `pathToClaudeCodeExecutable`
   remains available as an explicit override.
-- Promoted Opus 5 and Fable 5.1 from conservative dynamic registration to
-  measured Claude Code runtime overrides. Verified with Claude Code 2.1.274:
-  bare `claude-opus-5` serves 200K and `claude-opus-5[1m]` serves 1M; bare
-  `claude-fable-5-1` serves 1M and no separate 200K runtime is claimed. The
-  picker now exposes the measured windows instead of capping both models at
-  the unmeasured 200K fallback.
-- Models without measured Claude Code runtime behavior get a single canonical
-  picker entry: the bare id is sent to Claude Code and the registered window is
-  conservatively capped at 200K until measured; forced `1m` hides them instead
-  of claiming an unverified runtime. Measured models keep their existing
-  per-window entries and runtime overrides.
+- Context windows are now resolved entirely from OMP's Anthropic catalogue.
+  Each discovered model is registered with the catalogue's canonical
+  `contextWindow` verbatim and its canonical id is sent to Claude Code
+  unchanged. This corrects stale metadata — Opus 5, Sonnet 5, Fable 5, Opus 4.6,
+  and Sonnet 4.6 now register their true **1M** window instead of a 200K/`[1m]`
+  approximation — and means a newly discovered revision of a supported family
+  inherits its window automatically, with no bridge source edit. Haiku 4.5
+  stays 200K. MYOMP's context-fit decisions and OMP's status bar / auto-compaction
+  now read truthful capacities.
 - `resolveModel` prefers an exact id match over partial containment, so an
   exact id never resolves to a newer revision containing it as a prefix.
 - Thinking metadata is now projected from the catalogue into registration, and
@@ -62,14 +59,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `@oh-my-pi/*` devDependencies bumped to ^18.2.2 so typecheck/tests run
   against the same catalogue as current OMP installs (peer ranges unchanged).
 
-### Fixed
-- Single-window measured models no longer throw when the global
-  `provider.contextWindow` preference names the other window. A model that
-  supports only one Claude Code runtime (Haiku 4.5 is 200K-only; Fable 5.1 and
-  Opus 4.7 are 1M-only) now degrades to its sole supported window instead of
-  fabricating an impossible runtime or raising. The runtime is derived from the
-  model's measured windows so any future single-window model behaves the same;
-  dual-window models still honor the global preference.
+### Removed
+- Exact-id context-window machinery: `RUNTIME_OVERRIDE_IDS` and the
+  `resolveAuto`/`resolveForcedOneM`/`resolveForcedTwoHundredK`/`availableOverrideRuntimes`/
+  `resolveDynamicRuntimeModel` resolvers, the `[1m]` model-id spelling, and the
+  synthetic `-1m`/`-200k` picker variants (`buildVariantModels`, `parseVariantId`).
+  Every supported model has one canonical window, so there is nothing to select.
+- `provider.contextWindow`, `provider.plan`, and `provider.longContextExtraUsage`.
+  None affected true model capability once windows became catalogue-driven; the
+  first two also risked misreporting capacity. Setting any of them now logs a
+  one-time deprecation notice and is otherwise ignored. `plan`/`longContextExtraUsage`
+  remain valid Anthropic billing concepts but never redefine a model's context window.
 
 ## [0.8.1] - 2026-07-07
 
