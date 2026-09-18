@@ -11,6 +11,8 @@ import { buildRegisteredModels, claudeCodeModelId } from "../src/models.ts";
 const MODELS = [
 	{ id: "claude-fable-5-1", name: "Fable 5.1", contextWindow: 1_000_000 },
 	{ id: "claude-fable-5", name: "Fable 5", contextWindow: 1_000_000 },
+	{ id: "claude-mythos-5-1", name: "Mythos 5.1", contextWindow: 1_000_000 },
+	{ id: "claude-mythos-5", name: "Mythos 5", contextWindow: 1_000_000 },
 	{ id: "claude-opus-5", name: "Opus 5", contextWindow: 1_000_000 },
 	{ id: "claude-opus-4-8", name: "Opus 4.8", contextWindow: 1_000_000 },
 	{ id: "claude-opus-4-7", name: "Opus 4.7", contextWindow: 1_000_000 },
@@ -73,6 +75,8 @@ test("known-model matrix: every current model registers its authoritative window
 	const EXPECTED = [
 		["claude-fable-5-1", 1_000_000],
 		["claude-fable-5", 1_000_000],
+		["claude-mythos-5-1", 1_000_000],
+		["claude-mythos-5", 1_000_000],
 		["claude-opus-5", 1_000_000],
 		["claude-opus-4-8", 1_000_000],
 		["claude-opus-4-7", 1_000_000],
