@@ -98,27 +98,29 @@ With the current catalogue that means, for example:
 | `claude-bridge/claude-opus-4-6` | 1M | OMP catalogue |
 | `claude-bridge/claude-fable-5-1` | 1M | OMP catalogue |
 | `claude-bridge/claude-fable-5` | 1M | OMP catalogue |
+| `claude-bridge/claude-mythos-5-1` | 1M | OMP catalogue |
+| `claude-bridge/claude-mythos-5` | 1M | OMP catalogue |
 | `claude-bridge/claude-sonnet-4-6` | 1M | OMP catalogue |
 | `claude-bridge/claude-haiku-4-5` | 200K | OMP catalogue |
 
-Because the window is data-driven, a newer revision of a supported family (say a future Opus 5.1 or Fable 5.2) is registered with its own catalogue window automatically after restart — no bridge source edit required.
+Because discovery and context metadata are both data-driven, a newer revision **or an entirely new canonical Claude family** is registered from the Anthropic catalogue automatically after restart — no bridge source edit or family allowlist change required.
 
 ### Runtime capability metadata
 
 The Claude Agent SDK exposes **no pre-flight context-window capability API**: `query.supportedModels()` returns display/effort metadata but no context window, and the only 1M switch it documents (the `context-1m-2025-08-07` beta) applies to Sonnet 4/4.5 — models that predate every family the bridge supports. Registration therefore uses the current OMP catalogue / Anthropic capability metadata as the source of truth, with no runtime-measured exact-id exceptions currently required.
 
-> The window Claude Code actually *serves* is still logged from each result's `modelUsage` for observability. If a subscription ever serves a model less than its canonical window, set `CLAUDE_BRIDGE_DEBUG=1` to see it (see [Debugging](#debugging)); a documented compatibility exception can then be added deliberately.
+> The window Claude Code actually *serves* is still read from each result's `modelUsage`. A mismatch with the catalogue is surfaced as a one-time runtime warning and written to the debug log. Before relying on very large contexts after a Claude Code/SDK update, run `bun run smoke:context`: it sends a tiny prompt to the newest model in every discovered family and compares the served window with OMP's catalogue. Use `bun run smoke:context -- --all` to probe every registered model, or append explicit model ids.
 
 ## Models
 
-The picker is **discovered dynamically from OMP's Anthropic model catalogue** — there is no hard-coded discovery list to update when Anthropic ships a new revision. The bridge:
+The picker is **discovered dynamically from OMP's Anthropic model catalogue** — there is no hard-coded model-id or family allowlist to update when Anthropic ships a new model. The bridge:
 
 1. reads OMP's Anthropic catalogue at startup (synchronously, no network);
-2. keeps entries from the validated Claude families — **fable**, **opus**, **sonnet**, **haiku** — at or above each family's validated baseline (Fable ≥ 5, Opus ≥ 4.6, Sonnet ≥ 4.6, Haiku ≥ 4.5), skipping dated snapshot ids;
-3. orders each family newest-revision-first, so a partial name like `opus` always resolves to the newest Opus;
+2. keeps canonical `claude-<family>-<revision>` aliases and skips dated snapshots / legacy version-before-family ids;
+3. orders families deterministically and each family newest-revision-first, so a partial name like `opus` always resolves to the newest Opus;
 4. preserves the catalogue metadata — including each model's canonical `contextWindow` — and registers it directly, with no exact-id capability table.
 
-When your installed OMP catalogue gains a new revision of a supported family (say Fable 5.2), it appears in `/model` automatically after restart with its catalogue context window — no bridge update needed. A completely new family is only added once it has been validated against the Claude Code runtime.
+When your installed OMP catalogue gains a new revision **or a new family**, it appears in `/model` automatically after restart with its catalogue context window. Mythos is a concrete regression case: OMP 18.2.2 already catalogues Mythos 5/5.1, and the bridge now discovers them without adding `"mythos"` anywhere in source.
 
 With the current OMP catalogue you get, e.g.:
 
@@ -126,6 +128,8 @@ With the current OMP catalogue you get, e.g.:
 | --------- | ------ |
 | `claude-bridge/claude-fable-5-1` | 1M |
 | `claude-bridge/claude-fable-5` | 1M |
+| `claude-bridge/claude-mythos-5-1` | 1M |
+| `claude-bridge/claude-mythos-5` | 1M |
 | `claude-bridge/claude-opus-5` | 1M |
 | `claude-bridge/claude-opus-4-8` | 1M |
 | `claude-bridge/claude-opus-4-7` | 1M |
@@ -156,7 +160,7 @@ You can also bake it into a skill or AGENTS.md, e.g. *"Always call AskClaude to 
 | --------- | ------ | ----------- |
 | `prompt` | string | The question or task for Claude Code. |
 | `mode` | `read` (default), `none`, `full` | `read` = read files + web; `full` = read/write/bash. Lock `full` out with `allowFullMode: false`. |
-| `model` | `opus` (default), `sonnet`, `haiku`, or a full id | Which Claude model handles the delegation. |
+| `model` | partial family name (e.g. `opus`, `mythos`) or full id | Which Claude model handles the delegation; partial names resolve to the newest discovered revision. |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | Effort level. |
 | `isolated` | boolean (default `false`) | When `true`, Claude gets a clean session with no conversation history. |
 
