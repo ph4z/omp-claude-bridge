@@ -107,7 +107,7 @@ Because discovery and context metadata are both data-driven, a newer revision **
 
 ### Runtime capability metadata
 
-The Claude Agent SDK exposes **no pre-flight context-window capability API**: `query.supportedModels()` returns display/effort metadata but no context window, and the only 1M switch it documents (the `context-1m-2025-08-07` beta) applies to Sonnet 4/4.5 — models that predate every family the bridge supports. Registration therefore uses the current OMP catalogue / Anthropic capability metadata as the source of truth, with no runtime-measured exact-id exceptions currently required.
+The Claude Agent SDK exposes **no pre-flight context-window capability API**: `query.supportedModels()` returns display/effort metadata but no context window. Historical `context-1m-2025-08-07` beta behavior is therefore not used as a capability table. Registration uses the current OMP catalogue / Anthropic capability metadata as the source of truth, while the runtime smoke probe validates what Claude Code actually serves for the authenticated account.
 
 > The window Claude Code actually *serves* is still read from each result's `modelUsage`. A mismatch with the catalogue is surfaced as a one-time runtime warning and written to the debug log. Before relying on very large contexts after a Claude Code/SDK update, run `bun run smoke:context`: it sends a tiny prompt to the newest model in every discovered family and compares the served window with OMP's catalogue. Use `bun run smoke:context -- --all` to probe every registered model, or append explicit model ids.
 
