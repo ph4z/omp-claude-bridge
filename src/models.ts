@@ -10,20 +10,12 @@ export type ParsedClaudeModel = {
 	revision: number[];
 };
 
-// Claude families the bridge has validated against the Claude Code runtime, in
-// picker display order. minRevision is the oldest revision the bridge exposes:
-// older catalogue entries (e.g. claude-opus-4-1) predate the bridge's measured
-// Claude Code behavior and are deliberately kept out of the picker. Any NEWER
-// revision of a listed family is discovered automatically — never add exact
-// model ids here. A completely new family (e.g. mythos) must be validated
-// against the Claude Code runtime before being listed; that step is explicit
-// on purpose, not guessed from the catalogue.
-const SUPPORTED_FAMILIES: ReadonlyArray<{ family: string; minRevision: readonly number[] }> = [
-	{ family: "fable", minRevision: [5] },
-	{ family: "opus", minRevision: [4, 6] },
-	{ family: "sonnet", minRevision: [4, 6] },
-	{ family: "haiku", minRevision: [4, 5] },
-];
+// The input to buildModels is already OMP's Anthropic catalogue, so family
+// names are deliberately NOT allowlisted here. Canonical Claude aliases are
+// accepted structurally; dated snapshots and legacy version-before-family ids
+// are excluded by parseClaudeModelId. This lets a new Anthropic family (for
+// example Mythos) appear in the bridge as soon as OMP catalogs it, without a
+// bridge source edit.
 
 // Structurally parse `claude-<family>-<rev>[-<rev>...]` ids. Returns null for:
 // - non-Claude ids and legacy `claude-3-*` ids (version before family);
@@ -48,15 +40,8 @@ export function compareRevisions(a: readonly number[], b: readonly number[]): nu
 	return 0;
 }
 
-function supportedFamilyIndex(parsed: ParsedClaudeModel): number {
-	return SUPPORTED_FAMILIES.findIndex(
-		(f) => f.family === parsed.family && compareRevisions(parsed.revision, f.minRevision) >= 0,
-	);
-}
-
 export function isSupportedClaudeModel(id: string): boolean {
-	const parsed = parseClaudeModelId(id);
-	return parsed != null && supportedFamilyIndex(parsed) !== -1;
+	return parseClaudeModelId(id) != null;
 }
 
 // Discover bridge models from OMP's Anthropic catalogue and project each entry
@@ -66,8 +51,8 @@ export function isSupportedClaudeModel(id: string): boolean {
 // copied: they would bypass the bridge's custom streamSimple implementation.
 // Costs are zeroed because usage bills against the Claude subscription.
 //
-// Ordering is deterministic: family display order, then newer revisions first,
-// so `resolveModel("opus")` partial-matches the newest opus revision.
+// Ordering is deterministic without a family allowlist: family name, then newer
+// revisions first, so `resolveModel("opus")` partial-matches the newest opus revision.
 export type DiscoverableCatalogModel = {
 	id: string;
 	name: string;
@@ -80,13 +65,16 @@ export type DiscoverableCatalogModel = {
 
 export function buildModels<T extends DiscoverableCatalogModel>(piAiModels: readonly T[]) {
 	return piAiModels
-		.map((model) => ({ model, parsed: parseClaudeModelId(model.id) }))
-		.filter((entry): entry is { model: T; parsed: ParsedClaudeModel } =>
-			entry.parsed != null && supportedFamilyIndex(entry.parsed) !== -1)
+		.map((model, sourceIndex) => ({ model, parsed: parseClaudeModelId(model.id), sourceIndex }))
+		.filter((entry): entry is { model: T; parsed: ParsedClaudeModel; sourceIndex: number } =>
+			entry.parsed != null)
 		.sort((a, b) => {
-			const familyDiff = supportedFamilyIndex(a.parsed) - supportedFamilyIndex(b.parsed);
+			// Dynamic deterministic family ordering: no family-name table. Within a
+			// family, newest canonical revision wins partial selectors such as "opus".
+			const familyDiff = a.parsed.family.localeCompare(b.parsed.family);
 			if (familyDiff !== 0) return familyDiff;
-			return compareRevisions(b.parsed.revision, a.parsed.revision);
+			const revisionDiff = compareRevisions(b.parsed.revision, a.parsed.revision);
+			return revisionDiff !== 0 ? revisionDiff : a.sourceIndex - b.sourceIndex;
 		})
 		.map(({ model: { id, name, reasoning, input, contextWindow, maxTokens, thinking } }) => ({
 			id,
