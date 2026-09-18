@@ -49,7 +49,7 @@ Authentication and billing run through Claude Code and your Anthropic subscripti
 - **AskClaude delegation tool** — from any other provider, hand a task or question to Claude Code (read-only, no-tools, or full read/write/bash), optionally in an isolated session.
 - **Switchable context window** — force **1M** or **200K** globally, or leave it on measured per-model defaults. This is the headline addition in this fork.
 - **Session resume & persistence** — conversations survive across turns and reconnects.
-- **Skills + AGENTS.md forwarding** — your OMP skills and context files are passed into Claude Code's system prompt.
+- **Faithful system-prompt transport** — Claude Code keeps its native `claude_code` preset; the bridge projects OMP's *portable* additions (context files, skills, custom/append text, and a subagent's role/assignment context including native `task.context`) behind it, without duplicating OMP's harness. Unaccountable prompts fail closed rather than silently dropping instructions.
 - **Thinking support** — effort levels map through to Claude Code, including `xhigh` on Sonnet models.
 - **MCP tool bridging** with strict-config isolation by default.
 
@@ -236,7 +236,7 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 | `contextWindow` | `"auto"` | `"auto"`, `"1m"`, or `"200k"`. See [Context window controls](#context-window-controls). |
 | `plan` | `"pro"` | Set to `"max"` to enable Opus 4.6 at 1M in `auto`. |
 | `longContextExtraUsage` | `false` | Opt into metered 1M usage (enables Sonnet 4.6 1M everywhere, Opus 4.6 1M on Pro). |
-| `appendSystemPrompt` | `true` | Append OMP's AGENTS.md and skills. |
+| `appendSystemPrompt` | `true` | Project OMP's portable system-prompt additions (context files, skills, custom/append text, and subagent task context) behind Claude Code's preset. Set `false` to hand Claude Code only its own preset plus `settingSources`. |
 | `settingSources` | — | Claude Code filesystem settings to load; only applied when `appendSystemPrompt: false`. |
 | `strictMcpConfig` | `true` | Block MCP servers from `~/.claude.json` / `.mcp.json`. Cloud MCP is always blocked. |
 | `pathToClaudeCodeExecutable` | — | Path to the `claude` binary, if the bundled one is too old for a model or can't run on your OS/filesystem. Prefer a stable launcher/symlink path such as `~/.local/bin/claude`. |
@@ -244,6 +244,52 @@ Config is read from `~/.omp/agent/claude-bridge.json` (global) and the project O
 ## How it works
 
 OMP's built-in tools are bridged to Claude Code and back, so from your side it behaves like any other OMP provider. Model discovery and routing live in [`src/models.ts`](src/models.ts), which is deliberately free of runtime imports so the discovery and context-window policy stay unit-testable in isolation. On registration, the extension discovers bridge-compatible Claude models from OMP's Anthropic catalogue, applies the selected context-window policy (measured overrides for known models, conservative ≤200K registration for newly discovered ones), and registers the resulting models with OMP. The Claude Agent SDK's runtime `supportedModels()` API is intentionally not part of initial registration — OMP needs the model list synchronously at startup — but the catalogue layer is structured so a future optional runtime-validation pass can enrich it.
+
+### System-prompt transport
+
+Claude Code always starts with its own native `claude_code` preset — the bridge never
+replaces it with OMP's assembled system prompt. Instead it *projects* only the portable
+parts of what OMP built onto Claude Code's preset via the preset's `append`:
+
+- **project context files** (AGENTS.md/CLAUDE.md) reach Claude Code once;
+- **applicable skills** reach Claude Code once;
+- **custom and append system-prompt text** reach Claude Code once;
+- a **subagent's role/assignment block** — including native `task.context` (e.g. a
+  sequential-decomposition child's `PRIOR_PHASE_RESULTS`) — reaches the child once.
+  This is the class of content that used to disappear behind the bridge.
+
+Why not just `append` OMP's whole assembled system prompt? Because that would duplicate
+OMP's harness and tool catalog on top of Claude Code's own, recursively re-embed parent
+prompts into child prompts, mix OMP-specific runtime instructions with Claude Code's
+harness, and produce enormous prompts. Only the portable delta is projected.
+
+OMP 18.2.2 exposes only the fully-assembled `systemPrompt` string array to extensions
+(no structured breakdown), so the bridge records each assembled prompt at
+`before_agent_start` keyed by the prompt itself ([`src/prompt-capture.ts`](src/prompt-capture.ts)).
+Portable data is derived from the **rendered array itself**, not re-discovered from
+`process.cwd()`: this preserves the exact context files OMP supplied to a subagent or
+worktree, plus the default-layout append block and the rendered skills catalogue. When
+OMP uses a custom system prompt, 18.2.2 no longer exposes the boundary between
+`customPrompt` and `appendSystemPrompt`; the bridge therefore preserves that combined
+user/project block losslessly while removing generated project/skills containers and
+re-projecting those once.
+
+The provider then resolves its received prompt against those captures. Subagent prompt
+**inheritance is projected rather than recursively copied**: when a prompt embeds a
+previously-captured prompt, the raw parent is replaced by the parent's already-portable
+projection, deduplicated, with cycle detection. The capture registry is process-global
+(shared via `Symbol.for`, like provider-stream ownership) so a child session can record
+under one extension instance while the parent-owned provider callback resolves it. The
+registry is released only when that provider-owning instance shuts down; a child-session
+shutdown cannot clear captures still needed by the parent.
+
+If a received system prompt matches no capture and embeds no known capture, the bridge
+**fails closed** with a diagnostic instead of quietly calling Claude Code with missing
+instructions — a recoverable failed turn is better than silently losing the user's,
+project's, or agent's instructions. Isolated flows that never pass through
+`before_agent_start` (compaction/branch-summary) keep their own explicit prompts and are
+not routed through this capture path. The AskClaude tool continues to forward the skills
+block as before.
 
 ## Debugging
 

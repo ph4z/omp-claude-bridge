@@ -21,6 +21,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   existing model-aware `mapReasoningToClaudeEffort` mapper (no AskClaude-side
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
+### Fixed
+- Faithful system-prompt transport. The provider previously replaced OMP's
+  assembled system prompt with Claude Code's `claude_code` preset plus only
+  AGENTS.md and the skills block, so a subagent's native `task.context` (e.g. a
+  MYOMP sequential-decomposition child's `PRIOR_PHASE_RESULTS`) never reached
+  Claude Code. The bridge now records each assembled prompt at
+  `before_agent_start` and derives portable content from the exact rendered
+  `systemPrompt[]` instead of re-discovering files from `process.cwd()`: rendered
+  context files (with paths), skills, default-layout append text, custom-prompt
+  user/project content, and the subagent role/context block are projected behind
+  Claude Code's preset exactly once. The process-global capture registry lets a
+  child record under one extension instance and resolve from the parent-owned
+  provider callback, and is cleared only when that provider owner shuts down.
+  Unknown prompts fail closed instead of silently dropping instructions.
+  Context-window/model policy is unchanged. See
+  [`src/prompt-capture.ts`](src/prompt-capture.ts).
+
 ### Changed
 - Upgraded `@anthropic-ai/claude-agent-sdk` to `^0.3.274`, whose bundled Claude
   Code runtime is 2.1.274, so newly promoted Fable 5.1 works without requiring
