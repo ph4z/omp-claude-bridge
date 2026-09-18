@@ -6,6 +6,7 @@ import {
 	deriveCaptureInput,
 	extractSubagentBlock,
 	sharedPromptCaptures,
+	releaseSharedPromptCaptures,
 	SUBAGENT_BLOCK_MARKER,
 } from "../src/prompt-capture.ts";
 
@@ -37,9 +38,7 @@ test("1. basic projection carries each portable section exactly once, in order",
 	);
 });
 
-test("2. native OMP task.context survives claude-bridge (regression)", () => {
-	// Model OMP's assembled subagent prompt: a base harness block, the subagent
-	// role/context block carrying task.context, and a project footer.
+test("2. real OMP default layout preserves task.context, append, skills, and rendered context files", () => {
 	const subagentBlock = [
 		"§ Role",
 		"You are the architecture subagent.",
@@ -55,25 +54,57 @@ test("2. native OMP task.context survives claude-bridge (regression)", () => {
 		"§ Completion",
 		"Report results with yield.",
 	].join("\n");
-	const assembled = ["BLOCK0-OMP-HARNESS-AND-TOOL-CATALOG", subagentBlock, "PROJECT-FOOTER-ENV"];
-	const key = assembled.join("\n\n");
 
+	// Mirrors the relevant OMP 18.2.2 template boundaries:
+	// system-prompt.md → subagent-system-prompt.md → project-prompt.md.
+	const harness = [
+		"<conventions>",
+		"OMP-HARNESS-MUST-NOT-BE-APPENDED",
+		"</conventions>",
+		"",
+		"§ Runtime",
+		"# Skills & Rules",
+		"Matching skill → MUST read `skill://<name>` first.",
+		"<skills>",
+		"- bridge: BRIDGE-SKILL-MUST-SURVIVE",
+		"</skills>",
+	].join("\n");
+	const project = [
+		"PROJECT",
+		"",
+		"<repo-rules>",
+		"MUST follow these context files for all tasks:",
+		'<file path="/worktree/root/AGENTS.md">',
+		"ROOT-CONTEXT-MUST-SURVIVE",
+		"</file>",
+		'<file path="/worktree/root/pkg/AGENTS.md">',
+		"CHILD-CONTEXT-MUST-SURVIVE",
+		"</file>",
+		"</repo-rules>",
+		"",
+		"<critical>",
+		"generated project policy",
+		"</critical>",
+		"",
+		"APPEND-MUST-SURVIVE",
+	].join("\n");
+
+	const assembled = [harness, subagentBlock, project];
+	const key = assembled.join("\n\n");
 	const captures = new PromptCaptures();
-	captures.record(key, deriveCaptureInput(assembled, {
-		contextFiles: [{ path: "/proj/AGENTS.md", content: "CTX-FILE" }],
-		skillsBlock: "SKILLS-BLOCK",
-	}));
+	captures.record(key, deriveCaptureInput(assembled));
 
 	const projected = projectPromptCapture(captures.resolveOrDerive(key));
 	assert.ok(projected);
 	assert.equal(count(projected, "THIS-MUST-REACH-THE-CHILD"), 1);
+	assert.equal(count(projected, "APPEND-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "BRIDGE-SKILL-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "ROOT-CONTEXT-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "CHILD-CONTEXT-MUST-SURVIVE"), 1);
+	assert.ok(projected.includes('<project_instructions path="/worktree/root/AGENTS.md">'));
+	assert.ok(projected.includes('<project_instructions path="/worktree/root/pkg/AGENTS.md">'));
 	assert.ok(projected.includes("PRIOR PHASE RESULTS:"));
-	// Portable extras still present.
-	assert.ok(projected.includes("CTX-FILE"));
-	assert.ok(projected.includes("SKILLS-BLOCK"));
-	// The OMP harness / tool catalog is NOT re-appended behind the preset.
-	assert.ok(!projected.includes("BLOCK0-OMP-HARNESS-AND-TOOL-CATALOG"));
-	assert.ok(!projected.includes("PROJECT-FOOTER-ENV"));
+	assert.ok(!projected.includes("OMP-HARNESS-MUST-NOT-BE-APPENDED"));
 });
 
 test("3. parent → child inheritance projects portable parent parts, not raw harness", () => {
@@ -222,3 +253,68 @@ test("LRU eviction survives via inheritance revival", () => {
 	const projected = projectPromptCapture(captures.resolveOrDerive("CHILD-KEY"));
 	assert.ok(projected.includes("P-CUSTOM"));
 });
+
+test("custom OMP layout preserves custom+append while projecting context and skills once", () => {
+	const custom = [
+		"SYSTEM-CUSTOMIZATION-MUST-SURVIVE",
+		"CUSTOM-MUST-SURVIVE",
+		"APPEND-CUSTOM-MODE-MUST-SURVIVE",
+		"<project>",
+		"## Context",
+		"<instructions>",
+		'<file path="/custom/worktree/AGENTS.md">',
+		"CUSTOM-CONTEXT-MUST-SURVIVE",
+		"</file>",
+		"</instructions>",
+		"## Version Control",
+		"GENERATED-VCS-MUST-NOT-SURVIVE",
+		"</project>",
+		"Skills are specialized knowledge. Scan descriptions for your task domain.",
+		"<skills>",
+		'<skill name="custom-skill">',
+		"CUSTOM-SKILL-MUST-SURVIVE",
+		"</skill>",
+		"</skills>",
+	].join("\n");
+	const generatedProject = [
+		"PROJECT",
+		"<workstation>",
+		"- OS: linux",
+		"</workstation>",
+		"<critical>",
+		"generated project policy",
+		"</critical>",
+	].join("\n");
+	const assembled = [custom, generatedProject];
+	const key = assembled.join("\n\n");
+	const captures = new PromptCaptures();
+	captures.record(key, deriveCaptureInput(assembled));
+
+	const projected = projectPromptCapture(captures.resolveOrDerive(key));
+	assert.ok(projected);
+	assert.equal(count(projected, "SYSTEM-CUSTOMIZATION-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "CUSTOM-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "APPEND-CUSTOM-MODE-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "CUSTOM-CONTEXT-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "CUSTOM-SKILL-MUST-SURVIVE"), 1);
+	assert.ok(projected.includes('<project_instructions path="/custom/worktree/AGENTS.md">'));
+	assert.ok(!projected.includes("GENERATED-VCS-MUST-NOT-SURVIVE"));
+});
+
+test("shared prompt registry is released only through its owning registry reference", () => {
+	const globalState = {};
+	const owner = sharedPromptCaptures(globalState);
+	const child = sharedPromptCaptures(globalState);
+	owner.record("OWNER-PROMPT", { custom: "OWNER-CUSTOM", contextFiles: [], skills: [] });
+	assert.equal(child.size, 1);
+
+	const unrelated = new PromptCaptures();
+	assert.equal(releaseSharedPromptCaptures(unrelated, globalState), false);
+	assert.equal(owner.size, 1, "non-owner release cannot clear the shared registry");
+
+	assert.equal(releaseSharedPromptCaptures(owner, globalState), true);
+	assert.equal(owner.size, 0);
+	const replacement = sharedPromptCaptures(globalState);
+	assert.notEqual(replacement, owner, "owner shutdown creates a fresh registry for the next session");
+});
+
