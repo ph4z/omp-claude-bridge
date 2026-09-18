@@ -265,14 +265,23 @@ harness, and produce enormous prompts. Only the portable delta is projected.
 
 OMP 18.2.2 exposes only the fully-assembled `systemPrompt` string array to extensions
 (no structured breakdown), so the bridge records each assembled prompt at
-`before_agent_start` keyed by the prompt itself ([`src/prompt-capture.ts`](src/prompt-capture.ts)),
-then resolves the prompt the provider receives against those captures. Subagent
-prompt **inheritance is projected rather than recursively copied**: when a child prompt
-embeds a previously-captured parent prompt, the raw parent is replaced by the parent's
-already-portable projection, deduplicated, with cycle detection. The capture registry is
-process-global (shared via `Symbol.for`, like the provider stream ownership) so a child
-session that records under one extension instance is resolvable from the provider
-callback owned by the parent instance.
+`before_agent_start` keyed by the prompt itself ([`src/prompt-capture.ts`](src/prompt-capture.ts)).
+Portable data is derived from the **rendered array itself**, not re-discovered from
+`process.cwd()`: this preserves the exact context files OMP supplied to a subagent or
+worktree, plus the default-layout append block and the rendered skills catalogue. When
+OMP uses a custom system prompt, 18.2.2 no longer exposes the boundary between
+`customPrompt` and `appendSystemPrompt`; the bridge therefore preserves that combined
+user/project block losslessly while removing generated project/skills containers and
+re-projecting those once.
+
+The provider then resolves its received prompt against those captures. Subagent prompt
+**inheritance is projected rather than recursively copied**: when a prompt embeds a
+previously-captured prompt, the raw parent is replaced by the parent's already-portable
+projection, deduplicated, with cycle detection. The capture registry is process-global
+(shared via `Symbol.for`, like provider-stream ownership) so a child session can record
+under one extension instance while the parent-owned provider callback resolves it. The
+registry is released only when that provider-owning instance shuts down; a child-session
+shutdown cannot clear captures still needed by the parent.
 
 If a received system prompt matches no capture and embeds no known capture, the bridge
 **fails closed** with a diagnostic instead of quietly calling Claude Code with missing
