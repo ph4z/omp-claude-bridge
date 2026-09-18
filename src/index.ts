@@ -19,11 +19,12 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
-import { extractAgentsAppend } from "./agents-md.js";
+import { extractAgentsAppend, resolveAgentsMdPath } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
+import { sharedPromptCaptures, projectPromptCapture, deriveCaptureInput } from "./prompt-capture.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -110,6 +111,21 @@ function diagDump(label: string, data: Record<string, unknown>) {
 
 // Provider callback ownership across parent/child sessions is handled by
 // provider-registration.ts and is released only by the owning session shutdown.
+
+// Process-global capture registry: a child records its assembled prompt at
+// before_agent_start (possibly from a different extension module instance), and
+// the provider — whose streamSimple may be parent-owned — projects the portable
+// parts behind Claude Code's preset. Shared via Symbol.for so both operations see
+// the same captures regardless of which instance handled each. See prompt-capture.ts.
+const promptCaptures = sharedPromptCaptures(globalThis as unknown as Record<symbol, unknown>, {
+	onDiagnose: (d) => {
+		const first = d.matches[0];
+		debug(
+			`prompt-capture: no match for ${d.systemPrompt.length}-char system prompt`,
+			first ? `closest key ${first.key.length} chars, diverges at ${first.firstDivergent}` : "no known captures",
+		);
+	},
+});
 
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
@@ -1205,10 +1221,38 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
-	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(systemPromptText(context.systemPrompt)) : undefined;
-	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	// Resolve the received system prompt against what OMP recorded at
+	// before_agent_start and project only the portable parts (context files,
+	// skills, custom/append, and — the fix — a subagent's role/context block with
+	// native task.context) behind Claude Code's own claude_code preset. A prompt
+	// that matches no capture and embeds none fails closed: losing the user's
+	// instructions silently is worse than a failed turn (see prompt-capture.ts).
+	let systemPromptAppend: string | undefined;
+	if (appendSystemPrompt) {
+		try {
+			const capture = promptCaptures.resolveOrDerive(systemPromptText(context.systemPrompt));
+			systemPromptAppend = capture ? projectPromptCapture(capture) : undefined;
+		} catch (err) {
+			const msg = errorMessage(err);
+			debug("provider: prompt-capture fail-closed:", msg);
+			diagDump("prompt_capture_failclosed", {
+				error: msg,
+				systemPromptLen: systemPromptText(context.systemPrompt)?.length ?? 0,
+				knownCaptures: promptCaptures.size,
+			});
+			piUI?.notify(`Claude bridge: ${msg}`, "error");
+			queueMicrotask(() => {
+				if (queryCtx.turnOutput) {
+					queryCtx.turnOutput.stopReason = "error";
+					queryCtx.turnOutput.errorMessage = msg;
+				}
+				stream.push({ type: "error", reason: "error", error: queryCtx.turnOutput! });
+				markStreamComplete(stream);
+				stream.end();
+			});
+			return stream;
+		}
+	}
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
@@ -1684,6 +1728,32 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_compact", (event) => markRebuild(`session_compact:fromExtension=${event.fromExtension}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
+
+	// Record the portable parts of every assembled system prompt, keyed by the
+	// prompt itself, so the provider can project them behind the claude_code preset
+	// (see prompt-capture.ts). OMP 18.2.2 exposes only the assembled string[] here —
+	// no structured options — so context files and the skills block are re-sourced
+	// the same way the provider used to, and the subagent role/context block is
+	// lifted straight out of the array. This handler NEVER returns a systemPrompt:
+	// modifying it would retrigger OMP's agent-start policy re-preparation and change
+	// the delivered prompt. Recording is unconditional (cheap, and keeps captures
+	// available if appendSystemPrompt is toggled); the provider decides whether to
+	// project. Runs for main and subagent turns alike; the shared registry lets a
+	// child's record resolve from the parent-owned provider callback.
+	pi.on("before_agent_start", (event) => {
+		const key = systemPromptText(event.systemPrompt);
+		if (!key) return;
+		const agentsPath = resolveAgentsMdPath();
+		const agentsAppend = extractAgentsAppend();
+		const contextFiles = agentsPath && agentsAppend ? [{ path: agentsPath, content: agentsAppend }] : [];
+		const skillsBlock = extractSkillsBlock(key);
+		promptCaptures.record(key, deriveCaptureInput(event.systemPrompt, { contextFiles, skillsBlock }));
+		debug(
+			`before_agent_start: recorded prompt key=${key.length}chars`,
+			`blocks=${event.systemPrompt.length} agents=${Boolean(agentsAppend)} skills=${Boolean(skillsBlock)}`,
+			`subagentBlock=${event.systemPrompt.some((b) => b.includes("assigned to you by the main agent"))} captures=${promptCaptures.size}`,
+		);
+	});
 
 	// --- Provider ---
 	//
