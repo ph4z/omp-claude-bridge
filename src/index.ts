@@ -773,6 +773,8 @@ function updateUsage(output: AssistantMessage, usage: Record<string, number | un
 	debug(`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens}${reasoningText} cachePct=${cachePct}% model=${model.id}`);
 }
 
+const warnedContextWindowDrift = new Set<string>();
+
 // Log the *served* context window reported by an SDK result message
 // (modelUsage[id].contextWindow), which can differ from the window pi registered
 // (model.contextWindow, sourced from the OMP catalogue) if a runtime ever serves
@@ -784,6 +786,18 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 	if (!modelUsage) return;
 	for (const [k, v] of Object.entries(modelUsage)) {
 		debug(`${label}: served contextWindow=${v.contextWindow ?? "?"} maxOutputTokens=${v.maxOutputTokens ?? "?"} servedModel=${k} registered=${model.contextWindow}`);
+		if (v.contextWindow != null && model.contextWindow != null && v.contextWindow !== model.contextWindow) {
+			const key = `${model.id}:${v.contextWindow}`;
+			if (!warnedContextWindowDrift.has(key)) {
+				warnedContextWindowDrift.add(key);
+				const message =
+					`Claude Code served ${model.id} with contextWindow=${v.contextWindow}, ` +
+					`but OMP catalogue registered ${model.contextWindow}. Run "bun run smoke:context ${model.id}" ` +
+					`and report the mismatch before relying on large-context model switches.`;
+				console.error(`claude-bridge: ${message}`);
+				piUI?.notify?.(message, "warning");
+			}
+		}
 	}
 }
 
