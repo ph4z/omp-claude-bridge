@@ -416,10 +416,12 @@ export function releaseSharedPromptCaptures(
 export const SUBAGENT_BLOCK_MARKER = "You are operating on a piece of work assigned to you by the main agent.";
 
 const DEFAULT_HARNESS_MARKER = "<conventions>";
+const DEFAULT_HARNESS_ROLE_MARKER = "§ Role\nHelpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.";
 const DEFAULT_SKILLS_MARKER = "Matching skill → MUST read `skill://<name>` first.";
 const CUSTOM_SKILLS_MARKER = "Skills are specialized knowledge. Scan descriptions for your task domain.";
 const LEGACY_SKILLS_MARKER = "The following skills provide specialized instructions for specific tasks.";
 const PROJECT_BLOCK_PREFIX = "PROJECT";
+const PROJECT_CRITICAL_MARKER = "<critical>\n- Each response MUST advance the task; completion only stopping condition.";
 
 function compactJoin(parts: Array<string | undefined>): string | undefined {
 	const present = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
@@ -427,7 +429,8 @@ function compactJoin(parts: Array<string | undefined>): string | undefined {
 }
 
 function isDefaultHarnessBlock(block: string | undefined): boolean {
-	return Boolean(block?.trimStart().startsWith(DEFAULT_HARNESS_MARKER));
+	const text = block?.trimStart();
+	return Boolean(text?.startsWith(DEFAULT_HARNESS_MARKER) && text.includes(DEFAULT_HARNESS_ROLE_MARKER));
 }
 
 function findProjectBlock(assembled: string[]): string | undefined {
@@ -444,6 +447,15 @@ function extractTaggedContainer(source: string, open: string, close: string): st
 	const end = source.indexOf(close, start + open.length);
 	if (end === -1) return undefined;
 	return source.slice(start, end + close.length);
+}
+
+function findGeneratedCustomProject(source: string): { text: string; start: number; end: number } | undefined {
+	// custom-system-prompt.md emits <project> only for Context and/or Version
+	// Control, and the first generated heading is therefore one of these two.
+	const re = /<project>\s*\n(?=## (?:Context|Version Control)\b)[\s\S]*?<\/project>/;
+	const match = re.exec(source);
+	if (!match || match.index === undefined) return undefined;
+	return { text: match[0], start: match.index, end: match.index + match[0].length };
 }
 
 function parseContextFiles(container: string | undefined): Array<{ path: string; content: string }> {
@@ -467,10 +479,13 @@ export function extractRenderedContextFiles(assembled: string[]): Array<{ path: 
 	const seen = new Set<string>();
 
 	for (const block of assembled) {
+		const customProject = findGeneratedCustomProject(block)?.text;
 		const containers = [
 			extractTaggedContainer(block, "<repo-rules>", "</repo-rules>"),
-			// custom-system-prompt.md nests context files inside <instructions>.
-			extractTaggedContainer(block, "<instructions>", "</instructions>"),
+			// custom-system-prompt.md nests context files inside the generated
+			// <project>/<instructions> container. Scope to that generated project so
+			// user-authored <instructions> markup is never mistaken for context files.
+			customProject ? extractTaggedContainer(customProject, "<instructions>", "</instructions>") : undefined,
 		];
 		for (const container of containers) {
 			for (const file of parseContextFiles(container)) {
@@ -485,7 +500,7 @@ export function extractRenderedContextFiles(assembled: string[]): Array<{ path: 
 
 function extractSkillsFromBlock(block: string): string | undefined {
 	for (const marker of [DEFAULT_SKILLS_MARKER, CUSTOM_SKILLS_MARKER, LEGACY_SKILLS_MARKER]) {
-		const start = block.indexOf(marker);
+		const start = block.lastIndexOf(marker);
 		if (start === -1) continue;
 		const closeTag = marker === LEGACY_SKILLS_MARKER ? "</available_skills>" : "</skills>";
 		const end = block.indexOf(closeTag, start);
@@ -519,8 +534,10 @@ export function extractSubagentBlock(assembled: string[]): string | undefined {
 export function extractDefaultAppendBlock(assembled: string[]): string | undefined {
 	const project = findProjectBlock(assembled);
 	if (!project) return undefined;
+	const generatedStart = project.indexOf(PROJECT_CRITICAL_MARKER);
+	if (generatedStart === -1) return undefined;
 	const marker = "</critical>";
-	const boundary = project.indexOf(marker);
+	const boundary = project.indexOf(marker, generatedStart + PROJECT_CRITICAL_MARKER.length);
 	if (boundary === -1) return undefined;
 	const append = project.slice(boundary + marker.length).trim();
 	return append || undefined;
@@ -541,12 +558,9 @@ export function extractCustomPromptBlock(assembled: string[]): string | undefine
 	if (!first || isDefaultHarnessBlock(first) || first.includes(SUBAGENT_BLOCK_MARKER)) return undefined;
 
 	let portable = first;
-	const projectStart = portable.indexOf("<project>");
-	if (projectStart !== -1) {
-		const projectEnd = portable.indexOf("</project>", projectStart);
-		if (projectEnd !== -1) {
-			portable = removeRange(portable, projectStart, projectEnd + "</project>".length);
-		}
+	const generatedProject = findGeneratedCustomProject(portable);
+	if (generatedProject) {
+		portable = removeRange(portable, generatedProject.start, generatedProject.end);
 	}
 
 	const skills = extractSkillsFromBlock(portable);
