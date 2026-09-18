@@ -83,6 +83,7 @@ test("2. real OMP default layout preserves task.context, append, skills, and ren
 		"</repo-rules>",
 		"",
 		"<critical>",
+		"- Each response MUST advance the task; completion only stopping condition.",
 		"generated project policy",
 		"</critical>",
 		"",
