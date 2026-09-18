@@ -13,12 +13,12 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildVariantModels, buildModels, claudeCodeModelId, mapReasoningToClaudeEffort, type ContextWindowMode, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { buildRegisteredModels, buildModels, claudeCodeModelId, mapReasoningToClaudeEffort, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, retiredProviderKeys, type Config } from "./config.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
@@ -134,7 +134,6 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 // buildModels in models.ts (family/revision parsing, newest-first ordering).
 const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
-let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false, contextWindow: "auto" };
 
 function resolveModel(input: string) {
 	return _resolveModel(MODELS, input);
@@ -368,7 +367,7 @@ async function runIsolatedSummary(
 		const promptText = extractIsolatedSummaryPrompt(context.messages);
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 		const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
-		const cliModel = claudeCodeModelId(model, longContextSettings);
+		const cliModel = claudeCodeModelId(model);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
 		sdkQuery = query({
@@ -775,11 +774,11 @@ function updateUsage(output: AssistantMessage, usage: Record<string, number | un
 }
 
 // Log the *served* context window reported by an SDK result message
-// (modelUsage[id].contextWindow), which can differ from the window pi
-// registered (model.contextWindow) when the runtime entitlement doesn't
-// match the docs — e.g. bare Opus served 200K on Pro, or [1m] not honored.
-// The result message's modelUsage is otherwise discarded; this makes the
-// gap observable. See issue #18.
+// (modelUsage[id].contextWindow), which can differ from the window pi registered
+// (model.contextWindow, sourced from the OMP catalogue) if a runtime ever serves
+// a model a smaller window than its canonical capacity. The result message's
+// modelUsage is otherwise discarded; this makes any such drift observable so a
+// documented compatibility exception can be added deliberately. See issue #18.
 function logServedContextWindow(label: string, message: SDKMessage, model: Model<any>): void {
 	const modelUsage = (message as any).modelUsage as Record<string, { contextWindow?: number; maxOutputTokens?: number }> | undefined;
 	if (!modelUsage) return;
@@ -1269,9 +1268,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// into max, while retaining legacy fallback behavior where xhigh is absent.
 	const effort = mapReasoningToClaudeEffort(model, options?.reasoning);
 
-	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
-	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
-	const cliModel = claudeCodeModelId(model, longContextSettings);
+	// cliModel is the canonical id sent to Claude Code (== model.id); logged so
+	// debug lines reflect exactly what CC received.
+	const cliModel = claudeCodeModelId(model);
 	debug("provider: reasoning-map",
 		`registeredModel=${model.id} cliModel=${cliModel}`,
 		`requestedReasoning=${options?.reasoning ?? "default"} mappedEffort=${effort ?? "default"}`);
@@ -1486,7 +1485,7 @@ async function promptAndWait(
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
-	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
+	const cliModel = model ? claudeCodeModelId(model) : modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
 	// otherwise create one from pi's context.
@@ -1648,20 +1647,12 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
-	const contextWindowSetting = providerSettings.contextWindow;
-	const contextWindow: ContextWindowMode =
-		contextWindowSetting === "auto" || contextWindowSetting === "1m" || contextWindowSetting === "200k"
-			? contextWindowSetting
-			: "auto";
-	if (contextWindowSetting != null && contextWindow !== contextWindowSetting) {
-		console.error(`claude-bridge: invalid provider.contextWindow "${String(contextWindowSetting)}", using auto`);
+	for (const key of retiredProviderKeys(config)) {
+		console.error(
+			`claude-bridge: provider.${key} is no longer used; context window is sourced from OMP's model catalogue`,
+		);
 	}
-	longContextSettings = {
-		plan: providerSettings.plan ?? "pro",
-		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
-		contextWindow,
-	};
-	const registeredModels = buildVariantModels(MODELS, longContextSettings);
+	const registeredModels = buildRegisteredModels(MODELS);
 
 	// Session changes reset conversation state without releasing process-wide
 	// provider stream ownership. Child sessions must keep using the parent's
