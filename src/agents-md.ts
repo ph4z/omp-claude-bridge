@@ -44,6 +44,21 @@ export function extractAgentsAppend(): string | undefined {
 	}
 }
 
+// Render project context files (AGENTS.md/CLAUDE.md and friends) for forwarding
+// behind Claude Code's preset. Deduplicates by path so an inherited parent and
+// its child never emit the same file twice, and drops empties.
+export function formatProjectContext(contextFiles: Array<{ path: string; content: string }>): string | undefined {
+	const seen = new Set<string>();
+	const parts: string[] = [];
+	for (const file of contextFiles) {
+		if (seen.has(file.path)) continue;
+		seen.add(file.path);
+		const content = file.content.trim();
+		if (content) parts.push(content);
+	}
+	return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 export function sanitizeAgentsContent(content: string): string {
 	let sanitized = content;
 	sanitized = sanitized.replace(/~\/\.omp\b/gi, "~/.claude");
