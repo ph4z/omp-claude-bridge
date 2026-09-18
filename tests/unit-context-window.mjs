@@ -1,196 +1,112 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildVariantModels, claudeCodeModelId, parseVariantId } from "../src/models.ts";
+import { buildRegisteredModels, claudeCodeModelId } from "../src/models.ts";
 
-// Minimal stand-ins for pi-ai model entries (buildVariantModels reads id, name,
-// contextWindow and spreads the rest through to each variant).
+// Minimal stand-ins for the projected catalogue entries OMP registers. The
+// registered contextWindow is the model's canonical capacity, taken verbatim
+// from OMP's Anthropic catalogue — no exact-id table rewrites it, and no
+// synthetic window variants are fabricated. Values below mirror the current
+// bundled catalogue (see unit-model-discovery.mjs for the real-catalogue check).
 const MODELS = [
 	{ id: "claude-fable-5-1", name: "Fable 5.1", contextWindow: 1_000_000 },
 	{ id: "claude-fable-5", name: "Fable 5", contextWindow: 1_000_000 },
+	{ id: "claude-mythos-5-1", name: "Mythos 5.1", contextWindow: 1_000_000 },
+	{ id: "claude-mythos-5", name: "Mythos 5", contextWindow: 1_000_000 },
 	{ id: "claude-opus-5", name: "Opus 5", contextWindow: 1_000_000 },
-	{ id: "claude-opus-4-8", name: "Opus 4.8", contextWindow: 200_000 },
+	{ id: "claude-opus-4-8", name: "Opus 4.8", contextWindow: 1_000_000 },
 	{ id: "claude-opus-4-7", name: "Opus 4.7", contextWindow: 1_000_000 },
-	{ id: "claude-opus-4-6", name: "Opus 4.6", contextWindow: 200_000 },
-	{ id: "claude-sonnet-5", name: "Sonnet 5", contextWindow: 200_000 },
-	{ id: "claude-sonnet-4-6", name: "Sonnet 4.6", contextWindow: 200_000 },
+	{ id: "claude-opus-4-6", name: "Opus 4.6", contextWindow: 1_000_000 },
+	{ id: "claude-sonnet-5", name: "Sonnet 5", contextWindow: 1_000_000 },
+	{ id: "claude-sonnet-4-6", name: "Sonnet 4.6", contextWindow: 1_000_000 },
 	{ id: "claude-haiku-4-5", name: "Haiku 4.5", contextWindow: 200_000 },
 ];
 
-const settings = (contextWindow, extra = {}) => ({ plan: "pro", longContextExtraUsage: false, contextWindow, ...extra });
-const variants = (contextWindow, extra) => buildVariantModels(MODELS, settings(contextWindow, extra));
-const byId = (contextWindow, extra) => Object.fromEntries(variants(contextWindow, extra).map((m) => [m.id, m]));
+const byId = () => Object.fromEntries(buildRegisteredModels(MODELS).map((m) => [m.id, m]));
 
-test("auto (Pro): each model expands to its available windows with correct ids, windows, and labels", () => {
-	const m = byId("auto");
-	// Fable 5.1: measured bare id is 1M-only, no measured 200K runtime.
-	assert.equal(m["claude-fable-5-1"].contextWindow, 1_000_000);
-	assert.equal(m["claude-fable-5-1"].name, "Fable 5.1 (1M)");
-	assert.ok(!m["claude-fable-5-1-200k"], "fable-5-1 has no measured 200K runtime");
-	// Fable 5: default 200K + 1M alternate.
-	assert.equal(m["claude-fable-5"].contextWindow, 200_000);
-	assert.equal(m["claude-fable-5-1m"].contextWindow, 1_000_000);
-	// Opus 5: measured bare id is 200K; [1m] is the alternate 1M runtime.
-	assert.equal(m["claude-opus-5"].contextWindow, 200_000);
-	assert.equal(m["claude-opus-5"].name, "Opus 5 (200K)");
-	assert.equal(m["claude-opus-5-1m"].contextWindow, 1_000_000);
-	assert.equal(m["claude-opus-5-1m"].name, "Opus 5 (1M)");
-	// Opus 4.8: default 1M unsuffixed + 200K alternate.
-	assert.equal(m["claude-opus-4-8"].contextWindow, 1_000_000);
-	assert.equal(m["claude-opus-4-8"].name, "Opus 4.8 (1M)");
-	assert.equal(m["claude-opus-4-8-200k"].contextWindow, 200_000);
-	assert.equal(m["claude-opus-4-8-200k"].name, "Opus 4.8 (200K)");
-	// Opus 4.7: 1M only, no 200K variant.
-	assert.equal(m["claude-opus-4-7"].contextWindow, 1_000_000);
-	assert.ok(!m["claude-opus-4-7-200k"], "opus-4-7 has no 200K runtime");
-	// Opus 4.6 (Pro): default 200K unsuffixed + 1M alternate.
-	assert.equal(m["claude-opus-4-6"].contextWindow, 200_000);
-	assert.equal(m["claude-opus-4-6-1m"].contextWindow, 1_000_000);
-	// Sonnet 5: default 1M + 200K alternate.
-	assert.equal(m["claude-sonnet-5"].contextWindow, 1_000_000);
-	assert.equal(m["claude-sonnet-5-200k"].contextWindow, 200_000);
-	// Sonnet 4.6: default 200K + 1M alternate.
-	assert.equal(m["claude-sonnet-4-6"].contextWindow, 200_000);
-	assert.equal(m["claude-sonnet-4-6-1m"].contextWindow, 1_000_000);
-	// Haiku 4.5: 200K only, no 1M variant.
-	assert.equal(m["claude-haiku-4-5"].contextWindow, 200_000);
-	assert.ok(!m["claude-haiku-4-5-1m"], "haiku has no 1M runtime");
-});
-
-test("auto (Pro): 15 entries, and no base model emits two entries for the same window", () => {
-	const list = variants("auto");
-	assert.equal(list.length, 15);
-	for (const base of MODELS.map((mm) => mm.id)) {
-		const windows = list.filter((v) => parseVariantId(v.id).baseId === base).map((v) => v.contextWindow);
-		assert.equal(new Set(windows).size, windows.length, `${base} has duplicate windows`);
+test("each catalogue model registers as exactly one canonical entry with its catalogue window", () => {
+	const registered = buildRegisteredModels(MODELS);
+	// One entry per model, no fabricated variants.
+	assert.equal(registered.length, MODELS.length);
+	for (const source of MODELS) {
+		const entry = registered.find((m) => m.id === source.id);
+		assert.ok(entry, `${source.id} is registered`);
+		assert.equal(entry.contextWindow, source.contextWindow, `${source.id} keeps its catalogue window`);
+		assert.equal(entry.name, source.name, `${source.id} keeps its catalogue name`);
 	}
 });
 
-test("the default variant is listed before its suffixed alternate", () => {
-	const ids = variants("auto").map((m) => m.id);
-	assert.ok(ids.indexOf("claude-opus-5") < ids.indexOf("claude-opus-5-1m"));
-	assert.ok(ids.indexOf("claude-opus-4-8") < ids.indexOf("claude-opus-4-8-200k"));
-	assert.ok(ids.indexOf("claude-sonnet-5") < ids.indexOf("claude-sonnet-5-200k"));
-	assert.ok(ids.indexOf("claude-fable-5") < ids.indexOf("claude-fable-5-1m"));
-});
-
-test("auto (Max): Opus 4.6 default flips to 1M and 200K becomes the suffixed alternate", () => {
-	const m = byId("auto", { plan: "max" });
-	assert.equal(m["claude-opus-4-6"].contextWindow, 1_000_000);
-	assert.equal(m["claude-opus-4-6-200k"].contextWindow, 200_000);
-	assert.ok(!m["claude-opus-4-6-1m"], "1M is the default (unsuffixed) under Max");
-});
-
-test("200k config: unsuffixed prefers 200K, single-window 1M models keep 1M", () => {
-	const m = byId("200k");
-	assert.equal(m["claude-opus-5"].contextWindow, 200_000);
-	assert.equal(m["claude-opus-5-1m"].contextWindow, 1_000_000);
-	assert.equal(m["claude-opus-4-8"].contextWindow, 200_000);
-	assert.equal(m["claude-opus-4-8-1m"].contextWindow, 1_000_000);
-	assert.ok(!m["claude-opus-4-8-200k"], "200K is the default here, so no suffixed duplicate");
-	// Fable 5.1 and Opus 4.7 have no measured 200K runtime, so their only window
-	// (1M) becomes the unsuffixed default even under a 200K preference.
-	assert.equal(m["claude-fable-5-1"].contextWindow, 1_000_000);
-	assert.ok(!m["claude-fable-5-1-1m"]);
-	assert.equal(m["claude-opus-4-7"].contextWindow, 1_000_000);
-	assert.ok(!m["claude-opus-4-7-1m"]);
-	assert.equal(m["claude-haiku-4-5"].contextWindow, 200_000);
-});
-
-test("1m config: unsuffixed prefers 1M, 200K stays available as -200k, Haiku falls back to 200K", () => {
-	const m = byId("1m");
-	assert.equal(m["claude-opus-5"].contextWindow, 1_000_000);
-	assert.equal(m["claude-opus-5-200k"].contextWindow, 200_000);
-	assert.ok(!m["claude-opus-5-1m"], "1M is the default here, so no suffixed duplicate");
-	assert.equal(m["claude-fable-5-1"].contextWindow, 1_000_000);
-	assert.ok(!m["claude-fable-5-1-200k"]);
-	assert.equal(m["claude-opus-4-8"].contextWindow, 1_000_000);
-	assert.equal(m["claude-opus-4-8-200k"].contextWindow, 200_000);
-	assert.ok(!m["claude-opus-4-8-1m"], "1M is the default here, so no suffixed duplicate");
-	// Haiku has no 1M runtime, so 200K stays the unsuffixed default.
-	assert.equal(m["claude-haiku-4-5"].contextWindow, 200_000);
-	assert.ok(!m["claude-haiku-4-5-200k"]);
-	assert.equal(m["claude-opus-4-7"].contextWindow, 1_000_000);
-});
-
-test("parseVariantId splits window suffixes and leaves base ids intact", () => {
-	assert.deepEqual(parseVariantId("claude-opus-5"), { baseId: "claude-opus-5" });
-	assert.deepEqual(parseVariantId("claude-opus-5-1m"), { baseId: "claude-opus-5", forced: "1m" });
-	assert.deepEqual(parseVariantId("claude-fable-5-1"), { baseId: "claude-fable-5-1" });
-	assert.deepEqual(parseVariantId("claude-opus-4-8"), { baseId: "claude-opus-4-8" });
-	assert.deepEqual(parseVariantId("claude-opus-4-8-200k"), { baseId: "claude-opus-4-8", forced: "200k" });
-	assert.deepEqual(parseVariantId("claude-fable-5-1m"), { baseId: "claude-fable-5", forced: "1m" });
-});
-
-test("claudeCodeModelId: unsuffixed id follows the measured/configured default", () => {
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5" }, settings("auto")), "claude-opus-5");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5" }, settings("1m")), "claude-opus-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5-1" }, settings("auto")), "claude-fable-5-1");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5-1" }, settings("200k")), "claude-fable-5-1");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5" }, settings("auto")), "claude-fable-5");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5" }, settings("1m")), "claude-fable-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8" }, settings("auto")), "claude-opus-4-8[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8" }, settings("200k")), "claude-opus-4-8");
-});
-
-test("claudeCodeModelId: a suffixed id forces its window regardless of config", () => {
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5-1m" }, settings("200k")), "claude-opus-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5-200k" }, settings("1m")), "claude-opus-5");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8-200k" }, settings("auto")), "claude-opus-4-8");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8-200k" }, settings("1m")), "claude-opus-4-8");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5-1m" }, settings("200k")), "claude-fable-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-6-1m" }, settings("auto")), "claude-opus-4-6[1m]");
-});
-
-test("claudeCodeModelId throws only when an explicit suffixed variant names an unsupported window", () => {
-	// Hand-crafted suffixes asking for windows the measured model does not support
-	// are genuine errors (buildVariantModels never registers such variants).
-	assert.throws(() => claudeCodeModelId({ id: "claude-fable-5-1-200k" }, settings("auto")));
-	assert.throws(() => claudeCodeModelId({ id: "claude-haiku-4-5-1m" }, settings("auto")));
-	assert.throws(() => claudeCodeModelId({ id: "claude-opus-4-7-200k" }, settings("auto")));
-});
-
-test("single-window models resolve to their only window regardless of global preference", () => {
-	// Fable 5.1 is measured 1M-only: a 200K preference must keep the canonical bare
-	// id and its sole 1M runtime rather than fabricating a 200K variant.
-	for (const mode of ["auto", "200k", "1m"]) {
-		assert.equal(claudeCodeModelId({ id: "claude-fable-5-1" }, settings(mode)), "claude-fable-5-1");
+test("no synthetic -1m/-200k variant ids are ever registered", () => {
+	const ids = buildRegisteredModels(MODELS).map((m) => m.id);
+	for (const id of ids) {
+		assert.ok(!id.endsWith("-1m"), `${id} is not a fabricated 1M variant`);
+		assert.ok(!id.endsWith("-200k"), `${id} is not a fabricated 200K variant`);
 	}
-	// Haiku 4.5 is 200K-only: the global 1m preference must degrade to 200K, keep
-	// the canonical bare id, and never throw or fabricate [1m].
-	for (const mode of ["auto", "200k", "1m"]) {
-		const id = claudeCodeModelId({ id: "claude-haiku-4-5" }, settings(mode));
-		assert.equal(id, "claude-haiku-4-5", `haiku ${mode} keeps canonical id`);
-		assert.ok(!id.includes("1m"), `haiku ${mode} never fabricates [1m]`);
+});
+
+test("claudeCodeModelId sends the canonical id unchanged, with no [1m] spelling", () => {
+	for (const source of MODELS) {
+		const cli = claudeCodeModelId(source);
+		assert.equal(cli, source.id, `${source.id} sends its canonical id`);
+		assert.ok(!cli.includes("[1m]"), `${source.id} never fabricates a [1m] spelling`);
 	}
-	// Opus 4.7 is 1M-only: the global 200k preference must degrade to its 1M runtime.
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-7" }, settings("200k")), "claude-opus-4-7");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-7" }, settings("auto")), "claude-opus-4-7");
 });
 
-test("dual-window models still honor the global preference", () => {
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5" }, settings("1m")), "claude-opus-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-5" }, settings("200k")), "claude-opus-5");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8" }, settings("1m")), "claude-opus-4-8[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-opus-4-8" }, settings("200k")), "claude-opus-4-8");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5" }, settings("1m")), "claude-fable-5[1m]");
-	assert.equal(claudeCodeModelId({ id: "claude-fable-5" }, settings("200k")), "claude-fable-5");
+test("Opus 5 registers at 1M under its canonical id", () => {
+	const opus5 = byId()["claude-opus-5"];
+	assert.equal(opus5.contextWindow, 1_000_000);
+	assert.equal(claudeCodeModelId(opus5), "claude-opus-5");
 });
 
-test("measured Opus 5 and Fable 5.1 registration matches their observed Claude Code windows", () => {
-	const auto = byId("auto");
-	assert.equal(auto["claude-opus-5"].contextWindow, 200_000);
-	assert.equal(claudeCodeModelId(auto["claude-opus-5"], settings("auto")), "claude-opus-5");
-	assert.equal(auto["claude-opus-5-1m"].contextWindow, 1_000_000);
-	assert.equal(claudeCodeModelId(auto["claude-opus-5-1m"], settings("auto")), "claude-opus-5[1m]");
-	assert.equal(auto["claude-fable-5-1"].contextWindow, 1_000_000);
-	assert.equal(claudeCodeModelId(auto["claude-fable-5-1"], settings("auto")), "claude-fable-5-1");
+test("Sonnet 5 registers at 1M under its canonical id", () => {
+	const sonnet5 = byId()["claude-sonnet-5"];
+	assert.equal(sonnet5.contextWindow, 1_000_000);
+	assert.equal(claudeCodeModelId(sonnet5), "claude-sonnet-5");
 });
 
-test("provider.contextWindow=1m + Haiku 4.5: registered window stays 200000 and cli id stays claude-haiku-4-5", () => {
-	const registered = byId("1m")["claude-haiku-4-5"];
-	assert.equal(registered.contextWindow, 200_000);
-	let cli;
-	assert.doesNotThrow(() => { cli = claudeCodeModelId(registered, settings("1m")); });
-	assert.equal(cli, "claude-haiku-4-5");
+test("Haiku 4.5 stays 200K under its canonical id", () => {
+	const haiku = byId()["claude-haiku-4-5"];
+	assert.equal(haiku.contextWindow, 200_000);
+	assert.equal(claudeCodeModelId(haiku), "claude-haiku-4-5");
+});
+
+test("known-model matrix: every current model registers its authoritative window", () => {
+	// Authoritative context capacity per current Anthropic/OMP-catalogue metadata.
+	const EXPECTED = [
+		["claude-fable-5-1", 1_000_000],
+		["claude-fable-5", 1_000_000],
+		["claude-mythos-5-1", 1_000_000],
+		["claude-mythos-5", 1_000_000],
+		["claude-opus-5", 1_000_000],
+		["claude-opus-4-8", 1_000_000],
+		["claude-opus-4-7", 1_000_000],
+		["claude-opus-4-6", 1_000_000],
+		["claude-sonnet-5", 1_000_000],
+		["claude-sonnet-4-6", 1_000_000],
+		["claude-haiku-4-5", 200_000],
+	];
+	const m = byId();
+	for (const [id, window] of EXPECTED) {
+		assert.equal(m[id].contextWindow, window, `${id} registers ${window}`);
+		assert.equal(claudeCodeModelId(m[id]), id, `${id} keeps its canonical CLI id`);
+	}
+});
+
+test("models without a catalogue context window are dropped, not registered with a guess", () => {
+	const models = [
+		{ id: "claude-opus-5", name: "Opus 5", contextWindow: 1_000_000 },
+		{ id: "claude-opus-9", name: "Opus 9", contextWindow: null },
+		{ id: "claude-opus-8", name: "Opus 8", contextWindow: undefined },
+	];
+	const ids = buildRegisteredModels(models).map((m) => m.id);
+	assert.deepEqual(ids, ["claude-opus-5"]);
+});
+
+test("MYOMP context-safety: Opus 5 registered window fits a 300K conversation", () => {
+	// A caller comparing current usage against the registered window must not be
+	// misled by a stale 200K value into thinking a 300K conversation overflows.
+	const opus5 = byId()["claude-opus-5"];
+	const currentUsage = 300_000;
+	assert.ok(currentUsage <= opus5.contextWindow, "300K usage fits Opus 5's real 1M window");
+	assert.equal(opus5.contextWindow, 1_000_000);
 });

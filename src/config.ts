@@ -4,7 +4,6 @@
 // console.error, empty object returned) so the extension always starts.
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import type { ContextWindowMode } from "./models.js";
 import { CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
@@ -27,15 +26,6 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
-		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context
-		plan?: "pro" | "max";
-		// Set to true to opt into metered 1M context usage ("extra usage" in
-		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
-		// [1m] on Pro.
-		longContextExtraUsage?: boolean;
-		// Force the Claude Code context window for every model:
-		//   "auto" (default) - per-model policy, "1m" - force 1M, "200k" - force 200K.
-		contextWindow?: ContextWindowMode;
 	};
 }
 
@@ -56,4 +46,17 @@ export function loadConfig(cwd: string): Config {
 		askClaude: { ...global.askClaude, ...project.askClaude },
 		provider: { ...global.provider, ...project.provider },
 	};
+}
+
+// Context-capability knobs the bridge used to honor. A Claude model now has one
+// canonical context window sourced from OMP's Anthropic catalogue, so these no
+// longer change the registered window or the id sent to Claude Code. They are
+// still accepted (extra JSON keys are ignored) but reported once at activation.
+const RETIRED_PROVIDER_KEYS = ["contextWindow", "plan", "longContextExtraUsage"] as const;
+
+// Which retired provider keys a loaded config still sets, so activation can emit
+// a single deprecation notice instead of silently ignoring them.
+export function retiredProviderKeys(config: Config): string[] {
+	const provider = (config.provider ?? {}) as Record<string, unknown>;
+	return RETIRED_PROVIDER_KEYS.filter((key) => provider[key] !== undefined);
 }

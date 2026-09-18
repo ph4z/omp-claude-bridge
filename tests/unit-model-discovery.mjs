@@ -8,7 +8,7 @@ import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 
 import {
 	buildModels,
-	buildVariantModels,
+	buildRegisteredModels,
 	claudeCodeModelId,
 	compareRevisions,
 	isSupportedClaudeModel,
@@ -33,8 +33,6 @@ const catalogEntry = (id, overrides = {}) => ({
 	...overrides,
 });
 
-const settings = (contextWindow, extra = {}) => ({ plan: "pro", longContextExtraUsage: false, contextWindow, ...extra });
-
 // --- Structural id parsing ---
 
 test("parseClaudeModelId parses family and multi-part revisions", () => {
@@ -55,14 +53,29 @@ test("parseClaudeModelId rejects non-Claude, legacy, and snapshot ids", () => {
 	assert.equal(parseClaudeModelId("claude-fable-5[1m]"), null);
 });
 
-test("isSupportedClaudeModel accepts supported families at or above their baseline", () => {
-	for (const id of ["claude-opus-5", "claude-fable-5-1", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-6-2"]) {
+test("isSupportedClaudeModel accepts any canonical family from the Anthropic catalogue shape", () => {
+	for (const id of [
+		"claude-opus-5",
+		"claude-fable-5-1",
+		"claude-mythos-5",
+		"claude-mythos-5-1",
+		"claude-haiku-4-5",
+		"claude-opus-4-1",
+		"claude-aurora-7-2",
+	]) {
 		assert.equal(isSupportedClaudeModel(id), true, id);
 	}
 });
 
-test("isSupportedClaudeModel rejects unvalidated families and below-baseline revisions", () => {
-	for (const id of ["claude-mythos-5", "claude-opus-4-5", "claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-0"]) {
+test("isSupportedClaudeModel rejects only non-canonical/legacy/snapshot ids", () => {
+	for (const id of [
+		"gpt-6",
+		"claude",
+		"claude-3-5-sonnet-20241022",
+		"claude-opus-4-5-20251101",
+		"claude-mythos-latest",
+		"claude-opus-5[1m]",
+	]) {
 		assert.equal(isSupportedClaudeModel(id), false, id);
 	}
 });
@@ -94,15 +107,17 @@ const SYNTHETIC_CATALOG = [
 	catalogEntry("claude-3-5-sonnet-20241022"),
 ];
 
-test("buildModels filters to supported models and sorts newest revision first per family", () => {
+test("buildModels accepts catalogue families dynamically and sorts newest revision first per family", () => {
 	assert.deepEqual(buildModels(SYNTHETIC_CATALOG).map((m) => m.id), [
 		"claude-fable-5-1",
 		"claude-fable-5",
+		"claude-haiku-4-5",
+		"claude-mythos-5",
 		"claude-opus-5",
 		"claude-opus-4-8",
 		"claude-opus-4-7",
+		"claude-opus-4-5",
 		"claude-sonnet-5",
-		"claude-haiku-4-5",
 	]);
 });
 
@@ -112,13 +127,19 @@ test("partial names resolve to the newest revision; exact ids stay exact", () =>
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-1");
 	assert.equal(resolveModel(models, "claude-fable-5").id, "claude-fable-5");
 	assert.equal(resolveModel(models, "haiku").id, "claude-haiku-4-5");
+	assert.equal(resolveModel(models, "mythos").id, "claude-mythos-5");
 });
 
-test("a synthetic later revision is discovered and ordered first without source edits", () => {
-	const models = buildModels([...SYNTHETIC_CATALOG, catalogEntry("claude-fable-5-2"), catalogEntry("claude-opus-5-1")]);
-	assert.equal(models[0].id, "claude-fable-5-2");
+test("a synthetic later revision and entirely new family are discovered without source edits", () => {
+	const models = buildModels([
+		...SYNTHETIC_CATALOG,
+		catalogEntry("claude-fable-5-2"),
+		catalogEntry("claude-opus-5-1"),
+		catalogEntry("claude-aurora-1"),
+	]);
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-2");
 	assert.equal(resolveModel(models, "opus").id, "claude-opus-5-1");
+	assert.equal(resolveModel(models, "aurora").id, "claude-aurora-1");
 });
 
 test("projection preserves catalogue metadata and drops source routing fields", () => {
@@ -138,27 +159,37 @@ test("projection preserves catalogue metadata and drops source routing fields", 
 
 // --- Discovery over the real OMP catalogue ---
 
-test("Fable 5.1 and Opus 5 are discovered from the bundled OMP catalogue", () => {
+test("current Anthropic catalogue families, including Mythos, are discovered without a bridge allowlist", () => {
 	const catalog = getBundledModels("anthropic");
 	const models = buildModels(catalog);
 	const ids = models.map((m) => m.id);
 
-	assert.ok(ids.includes("claude-fable-5-1"), `missing claude-fable-5-1 in ${ids}`);
-	assert.ok(ids.includes("claude-opus-5"), `missing claude-opus-5 in ${ids}`);
-	for (const id of ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
-		assert.ok(ids.includes(id), `missing legacy model ${id}`);
+	for (const id of [
+		"claude-fable-5-1",
+		"claude-fable-5",
+		"claude-mythos-5-1",
+		"claude-mythos-5",
+		"claude-opus-5",
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-5",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5",
+	]) {
+		assert.ok(ids.includes(id), `missing current catalogue model ${id}`);
 	}
 	for (const id of ids) {
-		assert.ok(!id.startsWith("claude-mythos"), `unvalidated family leaked: ${id}`);
 		assert.ok(!/\d{4,}/.test(id), `snapshot id leaked: ${id}`);
 	}
 
 	assert.equal(resolveModel(models, "fable").id, "claude-fable-5-1");
+	assert.equal(resolveModel(models, "mythos").id, "claude-mythos-5-1");
 	assert.equal(resolveModel(models, "opus").id, "claude-opus-5");
 
-	// Base discovery still preserves catalogue metadata; measured runtime policy
-	// is applied later by buildVariantModels.
-	for (const id of ["claude-fable-5-1", "claude-opus-5"]) {
+	// Discovery preserves catalogue metadata verbatim; the registered window is
+	// that same catalogue capacity (see buildRegisteredModels).
+	for (const id of ["claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5"]) {
 		const registered = models.find((m) => m.id === id);
 		const catalogModel = catalog.find((m) => m.id === id);
 		assert.equal(registered.contextWindow, catalogModel.contextWindow, id);
@@ -167,53 +198,83 @@ test("Fable 5.1 and Opus 5 are discovered from the bundled OMP catalogue", () =>
 	}
 });
 
-test("future revisions remain dynamically discovered without exact-id source edits", () => {
+test("real catalogue: every current model registers its authoritative context window under its canonical id", () => {
+	// Source of truth: OMP's bundled Anthropic catalogue. If OMP corrects a window
+	// upstream, the bridge follows automatically — these values are asserted, not
+	// hardcoded into src.
+	const EXPECTED = {
+		"claude-fable-5-1": 1_000_000,
+		"claude-fable-5": 1_000_000,
+		"claude-mythos-5-1": 1_000_000,
+		"claude-mythos-5": 1_000_000,
+		"claude-opus-5": 1_000_000,
+		"claude-opus-4-8": 1_000_000,
+		"claude-opus-4-7": 1_000_000,
+		"claude-opus-4-6": 1_000_000,
+		"claude-sonnet-5": 1_000_000,
+		"claude-sonnet-4-6": 1_000_000,
+		"claude-haiku-4-5": 200_000,
+	};
+	const registered = Object.fromEntries(
+		buildRegisteredModels(buildModels(getBundledModels("anthropic"))).map((m) => [m.id, m]),
+	);
+	for (const [id, window] of Object.entries(EXPECTED)) {
+		assert.ok(registered[id], `${id} is registered`);
+		assert.equal(registered[id].contextWindow, window, `${id} registers ${window}`);
+		assert.equal(claudeCodeModelId(registered[id]), id, `${id} keeps its canonical CLI id`);
+	}
+});
+
+test("future revisions and future families remain dynamic with no allowlist in source", () => {
 	const source = readFileSync(new URL("../src/models.ts", import.meta.url), "utf8");
+	assert.ok(!source.includes("SUPPORTED_FAMILIES"));
 	assert.ok(!source.includes("claude-fable-5-2"));
 	assert.ok(!source.includes("claude-opus-5-1"));
+	assert.ok(!source.includes("claude-aurora-1"));
 });
 
-// --- Context-window policy for dynamically discovered models ---
+// --- Context-window resolution for dynamically discovered models -------------
 
-test("auto: a future unmeasured model gets one canonical entry capped at 200K", () => {
-	const models = buildModels([catalogEntry("claude-fable-5-2", { name: "Claude Fable 5.2" })]);
-	const variants = buildVariantModels(models, settings("auto"));
-	assert.equal(variants.length, 1);
-	assert.equal(variants[0].id, "claude-fable-5-2");
-	assert.equal(variants[0].contextWindow, 200_000);
-	assert.equal(variants[0].name, "Claude Fable 5.2 (200K)");
-	// The canonical id goes to Claude Code unchanged — no fabricated [1m].
-	assert.equal(claudeCodeModelId(variants[0], settings("auto")), "claude-fable-5-2");
+test("future model regression: a newly discovered 1M model registers as 1M with its canonical id, no source edits", () => {
+	// A future revision OMP adds to its catalogue — its id appears nowhere in
+	// src/models.ts. It must inherit its catalogue window and canonical CLI id
+	// purely through discovery: if this ever requires an exact-id override, the
+	// architectural bug has returned and this test fails.
+	const future = catalogEntry("claude-opus-5-99", { name: "Claude Opus 5.99", contextWindow: 1_000_000, maxTokens: 128_000 });
+	assert.ok(!readFileSync(new URL("../src/models.ts", import.meta.url), "utf8").includes("claude-opus-5-99"));
+
+	const models = buildModels([future]);
+	assert.equal(models.length, 1, "discovered: YES");
+	const registered = buildRegisteredModels(models);
+	assert.equal(registered.length, 1);
+	assert.equal(registered[0].id, "claude-opus-5-99", "registered id");
+	assert.equal(registered[0].contextWindow, 1_000_000, "registered context");
+	assert.equal(claudeCodeModelId(registered[0]), "claude-opus-5-99", "CLI id");
 });
 
-test("forced modes clamp a future unmeasured model's window but never rewrite its id", () => {
-	const models = buildModels([catalogEntry("claude-fable-5-2")]);
-
-	const forced200k = buildVariantModels(models, settings("200k"));
-	assert.equal(forced200k.length, 1);
-	assert.equal(forced200k[0].id, "claude-fable-5-2");
-	assert.equal(forced200k[0].contextWindow, 200_000);
-	assert.equal(claudeCodeModelId(forced200k[0], settings("200k")), "claude-fable-5-2");
-
-	const forced1m = buildVariantModels(models, settings("1m"));
-	assert.equal(forced1m.length, 0);
+test("future model regression: a newly discovered 200K model registers as 200K, no exact-id logic", () => {
+	const future = catalogEntry("claude-haiku-4-9", { name: "Claude Haiku 4.9", contextWindow: 200_000, maxTokens: 64_000 });
+	const registered = buildRegisteredModels(buildModels([future]));
+	assert.equal(registered.length, 1);
+	assert.equal(registered[0].id, "claude-haiku-4-9");
+	assert.equal(registered[0].contextWindow, 200_000);
+	assert.equal(claudeCodeModelId(registered[0]), "claude-haiku-4-9");
 });
 
-test("1m: a dynamic model whose catalogue window is below 1M is hidden", () => {
-	const models = buildModels([catalogEntry("claude-haiku-5", { contextWindow: 200_000 })]);
-	assert.equal(buildVariantModels(models, settings("1m")).length, 0);
-	const auto = buildVariantModels(models, settings("auto"));
-	assert.equal(auto.length, 1);
-	assert.equal(auto[0].contextWindow, 200_000);
-});
-
-test("future dynamic models never emit -1m/-200k variant ids alongside override models", () => {
+test("each discovered model registers exactly one canonical entry, never -1m/-200k variants", () => {
 	const models = buildModels([catalogEntry("claude-fable-5-2"), catalogEntry("claude-fable-5")]);
-	const variants = buildVariantModels(models, settings("auto"));
-	assert.deepEqual(variants.map((m) => m.id), ["claude-fable-5-2", "claude-fable-5", "claude-fable-5-1m"]);
-	// Override models keep their measured behavior: bare Fable 5 serves 200K.
-	assert.equal(variants.find((m) => m.id === "claude-fable-5").contextWindow, 200_000);
-	assert.equal(claudeCodeModelId(variants.find((m) => m.id === "claude-fable-5-1m"), settings("auto")), "claude-fable-5[1m]");
+	const registered = buildRegisteredModels(models);
+	assert.deepEqual(registered.map((m) => m.id), ["claude-fable-5-2", "claude-fable-5"]);
+	for (const m of registered) {
+		assert.ok(!m.id.endsWith("-1m") && !m.id.endsWith("-200k"), `${m.id} is canonical`);
+		assert.equal(claudeCodeModelId(m), m.id);
+	}
+});
+
+test("a discovered model whose catalogue omits a context window is dropped, not guessed", () => {
+	const models = buildModels([catalogEntry("claude-opus-5-98", { contextWindow: null })]);
+	assert.equal(models.length, 1, "still discovered structurally");
+	assert.equal(buildRegisteredModels(models).length, 0, "but not registered without a window");
 });
 
 // --- Model-aware reasoning effort mapping ---
@@ -250,14 +311,14 @@ test("thinking effortMap is honored before sending the wire effort", () => {
 	assert.equal(mapReasoningToClaudeEffort(mapped, "xhigh"), "high");
 });
 
-test("dynamic context safety never promotes a future unmeasured catalogue model above 200K", () => {
-	const oneMillion = buildModels([catalogEntry("claude-opus-6", { contextWindow: 1_000_000 })]);
-	const auto = buildVariantModels(oneMillion, settings("auto"));
-	assert.equal(auto.length, 1);
-	assert.equal(auto[0].contextWindow, 200_000);
-	assert.equal(claudeCodeModelId(auto[0], settings("auto")), "claude-opus-6");
-	assert.equal(buildVariantModels(oneMillion, settings("1m")).length, 0);
+test("dynamic context safety: a discovered model's registered window equals its catalogue capacity", () => {
+	// The catalogue is the single source of truth: whatever window OMP advertises
+	// is what the bridge registers, verbatim, for MYOMP's context-fit router.
+	const oneMillion = buildRegisteredModels(buildModels([catalogEntry("claude-opus-6", { contextWindow: 1_000_000 })]));
+	assert.equal(oneMillion.length, 1);
+	assert.equal(oneMillion[0].contextWindow, 1_000_000);
+	assert.equal(claudeCodeModelId(oneMillion[0]), "claude-opus-6");
 
-	const smaller = buildModels([catalogEntry("claude-opus-6", { contextWindow: 128_000 })]);
-	assert.equal(buildVariantModels(smaller, settings("auto"))[0].contextWindow, 128_000);
+	const smaller = buildRegisteredModels(buildModels([catalogEntry("claude-opus-6", { contextWindow: 128_000 })]));
+	assert.equal(smaller[0].contextWindow, 128_000);
 });
