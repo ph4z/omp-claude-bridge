@@ -14,7 +14,7 @@ type ProbeResult = {
 	servedModel?: string;
 	servedWindow?: number;
 	maxOutputTokens?: number;
-	status: "PASS" | "MISMATCH" | "NO_USAGE" | "ERROR";
+	status: "PASS" | "UNAVAILABLE" | "MISMATCH" | "NO_USAGE" | "ERROR";
 	error?: string;
 };
 
@@ -45,6 +45,11 @@ function selectedModels() {
 	}
 
 	return args.includes("--all") ? all : newestPerFamily(all);
+}
+
+function isUnavailableModelError(message: string): boolean {
+	return /there's an issue with the selected model/i.test(message) &&
+		/may not exist or you may not have access/i.test(message);
 }
 
 async function probe(model: { id: string; contextWindow: number | null }): Promise<ProbeResult> {
@@ -130,6 +135,7 @@ async function probe(model: { id: string; contextWindow: number | null }): Promi
 			status: servedWindow === catalogWindow ? "PASS" : "MISMATCH",
 		};
 	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
 		return {
 			model: model.id,
 			catalogWindow,
@@ -137,8 +143,8 @@ async function probe(model: { id: string; contextWindow: number | null }): Promi
 			servedModel,
 			servedWindow,
 			maxOutputTokens,
-			status: "ERROR",
-			error: error instanceof Error ? error.message : String(error),
+			status: isUnavailableModelError(message) ? "UNAVAILABLE" : "ERROR",
+			error: message,
 		};
 	} finally {
 		try { q.close(); } catch {}
@@ -180,7 +186,13 @@ async function main(): Promise<void> {
 	console.log();
 	print(results);
 
-	if (results.some((result) => result.status !== "PASS")) {
+	const available = results.filter((result) => result.status !== "UNAVAILABLE");
+	if (available.length === 0) {
+		console.error("No probed model was available to this Claude Code account.");
+		process.exitCode = 2;
+		return;
+	}
+	if (available.some((result) => result.status !== "PASS")) {
 		process.exitCode = 2;
 	}
 }
