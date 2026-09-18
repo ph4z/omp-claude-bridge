@@ -10,12 +10,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Debug-mode reasoning instrumentation: provider and AskClaude calls now log a
   dedicated `reasoning-map` record showing the OMP-requested reasoning level,
   the mapped Claude Agent SDK effort, and the effective Claude Code model id.
-- Dynamic Claude model discovery from OMP's Anthropic catalogue. The picker is
-  no longer driven by a hard-coded model-id list: any revision of a validated
-  family (fable, opus, sonnet, haiku) at or above its baseline is discovered,
-  ordered newest-first, and registered with the catalogue's metadata (context
-  window, max tokens, thinking/effort capabilities). Newly shipped revisions
-  such as Fable 5.1 and Opus 5 appear automatically.
+- Fully dynamic Claude model discovery from OMP's Anthropic catalogue. The
+  picker has no hard-coded model-id **or family** allowlist: canonical
+  `claude-<family>-<revision>` aliases are discovered structurally, dated
+  snapshots/legacy ids are skipped, and catalogue metadata (context window,
+  max tokens, thinking/effort capabilities) is preserved verbatim. New
+  revisions and entirely new families therefore appear without a bridge source
+  edit; Mythos 5/5.1 from OMP 18.2.2 are regression-covered examples.
+- Runtime context smoke probe: `bun run smoke:context` sends a tiny request to
+  the newest model in every discovered family and compares Claude Code's
+  served `modelUsage.contextWindow` with OMP's catalogue. `--all` probes every
+  registered model; explicit ids can be supplied for targeted checks.
 - AskClaude's public `thinking` parameter now accepts `max`, alongside `off`,
   `minimal`, `low`, `medium`, `high`, and `xhigh`. The value flows through the
   existing model-aware `mapReasoningToClaudeEffort` mapper (no AskClaude-side
@@ -48,10 +53,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `contextWindow` verbatim and its canonical id is sent to Claude Code
   unchanged. This corrects stale metadata — Opus 5, Sonnet 5, Fable 5, Opus 4.6,
   and Sonnet 4.6 now register their true **1M** window instead of a 200K/`[1m]`
-  approximation — and means a newly discovered revision of a supported family
-  inherits its window automatically, with no bridge source edit. Haiku 4.5
-  stays 200K. MYOMP's context-fit decisions and OMP's status bar / auto-compaction
-  now read truthful capacities.
+  approximation — and means a newly discovered revision or family inherits its
+  window automatically, with no bridge source edit. Mythos 5/5.1 register at 1M
+  directly from OMP 18.2.2; Haiku 4.5 stays 200K. MYOMP's context-fit decisions
+  and OMP's status bar / auto-compaction now read catalogue capacities. Any
+  runtime/catalogue mismatch reported by Claude Code is surfaced once to the
+  user and can be reproduced with `bun run smoke:context`.
 - `resolveModel` prefers an exact id match over partial containment, so an
   exact id never resolves to a newer revision containing it as a prefix.
 - Thinking metadata is now projected from the catalogue into registration, and
