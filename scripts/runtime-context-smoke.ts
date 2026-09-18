@@ -2,8 +2,6 @@ import { query, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { buildModels, buildRegisteredModels, parseClaudeModelId } from "../src/models.js";
 
-type RegisteredModel = ReturnType<typeof buildRegisteredModels<ReturnType<typeof buildModels>[number]>>[number];
-
 type ServedUsage = {
 	contextWindow?: number;
 	maxOutputTokens?: number;
