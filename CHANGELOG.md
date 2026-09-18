@@ -19,8 +19,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   edit; Mythos 5/5.1 from OMP 18.2.2 are regression-covered examples.
 - Runtime context smoke probe: `bun run smoke:context` sends a tiny request to
   the newest model in every discovered family and compares Claude Code's
-  served `modelUsage.contextWindow` with OMP's catalogue. `--all` probes every
-  registered model; explicit ids can be supplied for targeted checks.
+  served `modelUsage.contextWindow` with OMP's catalogue. Models that are
+  catalogued but unavailable to the authenticated account are reported as
+  `UNAVAILABLE` and skipped; actual window mismatches, missing usage metadata,
+  and unexpected errors still fail the smoke. `--all` probes every registered
+  model; explicit ids can be supplied for targeted checks.
 - AskClaude's public `thinking` parameter now accepts `max`, alongside `off`,
   `minimal`, `low`, `medium`, `high`, and `xhigh`. The value flows through the
   existing model-aware `mapReasoningToClaudeEffort` mapper (no AskClaude-side
