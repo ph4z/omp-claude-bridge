@@ -109,7 +109,7 @@ Because discovery and context metadata are both data-driven, a newer revision **
 
 The Claude Agent SDK exposes **no pre-flight context-window capability API**: `query.supportedModels()` returns display/effort metadata but no context window. Historical `context-1m-2025-08-07` beta behavior is therefore not used as a capability table. Registration uses the current OMP catalogue / Anthropic capability metadata as the source of truth, while the runtime smoke probe validates what Claude Code actually serves for the authenticated account.
 
-> The window Claude Code actually *serves* is still read from each result's `modelUsage`. A mismatch with the catalogue is surfaced as a one-time runtime warning and written to the debug log. Before relying on very large contexts after a Claude Code/SDK update, run `bun run smoke:context`: it sends a tiny prompt to the newest model in every discovered family and compares the served window with OMP's catalogue. Use `bun run smoke:context -- --all` to probe every registered model, or append explicit model ids.
+> The window Claude Code actually *serves* is still read from each result's `modelUsage`. A mismatch with the catalogue is surfaced as a one-time runtime warning and written to the debug log. Before relying on very large contexts after a Claude Code/SDK update, run `bun run smoke:context`: it sends a tiny prompt to the newest model in every discovered family and compares the served window with OMP's catalogue. Models catalogued by OMP but unavailable to the authenticated account (for example invite-only Mythos without entitlement) are reported as `UNAVAILABLE` and skipped; `MISMATCH`, `NO_USAGE`, and unexpected errors remain failures. Use `bun run smoke:context -- --all` to probe every registered model, or append explicit model ids.
 
 ## Models
 
@@ -120,7 +120,7 @@ The picker is **discovered dynamically from OMP's Anthropic model catalogue** �
 3. orders families deterministically and each family newest-revision-first, so a partial name like `opus` always resolves to the newest Opus;
 4. preserves the catalogue metadata — including each model's canonical `contextWindow` — and registers it directly, with no exact-id capability table.
 
-When your installed OMP catalogue gains a new revision **or a new family**, it appears in `/model` automatically after restart with its catalogue context window. Mythos is a concrete regression case: OMP 18.2.2 already catalogues Mythos 5/5.1, and the bridge now discovers them without adding `"mythos"` anywhere in source.
+When your installed OMP catalogue gains a new revision **or a new family**, it appears in `/model` automatically after restart with its catalogue context window. Mythos is a concrete regression case: OMP 18.2.2 already catalogues Mythos 5/5.1, and the bridge now discovers them without adding `"mythos"` anywhere in source. Availability is account-specific: Anthropic marks Mythos as invite-only/trusted-access, so catalogued models can legitimately appear in the picker yet be rejected by Claude Code for an account without entitlement.
 
 With the current OMP catalogue you get, e.g.:
 
