@@ -19,12 +19,11 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
-import { extractAgentsAppend, resolveAgentsMdPath } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
-import { sharedPromptCaptures, projectPromptCapture, deriveCaptureInput } from "./prompt-capture.js";
+import { sharedPromptCaptures, releaseSharedPromptCaptures, projectPromptCapture, deriveCaptureInput } from "./prompt-capture.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -1680,7 +1679,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		resetSharedSession("session_shutdown");
 		if (releaseSharedProvider(streamClaudeAgentSdk)) {
-			debug("session_shutdown: released provider stream ownership");
+			releaseSharedPromptCaptures(promptCaptures);
+			debug("session_shutdown: released provider stream ownership + prompt captures");
 		}
 	});
 
@@ -1731,27 +1731,21 @@ export default function (pi: ExtensionAPI) {
 
 	// Record the portable parts of every assembled system prompt, keyed by the
 	// prompt itself, so the provider can project them behind the claude_code preset
-	// (see prompt-capture.ts). OMP 18.2.2 exposes only the assembled string[] here —
-	// no structured options — so context files and the skills block are re-sourced
-	// the same way the provider used to, and the subagent role/context block is
-	// lifted straight out of the array. This handler NEVER returns a systemPrompt:
-	// modifying it would retrigger OMP's agent-start policy re-preparation and change
-	// the delivered prompt. Recording is unconditional (cheap, and keeps captures
-	// available if appendSystemPrompt is toggled); the provider decides whether to
-	// project. Runs for main and subagent turns alike; the shared registry lets a
-	// child's record resolve from the parent-owned provider callback.
+	// (see prompt-capture.ts). OMP 18.2.2 exposes only the final string[] here, so
+	// derive from the exact rendered array instead of re-discovering files from
+	// process.cwd(): subagents/worktrees can have different preloaded context.
+	// This handler NEVER returns a systemPrompt; recording must not modify OMP's
+	// per-turn policy. The shared registry lets a child record from one extension
+	// instance and the parent-owned provider callback resolve it from another.
 	pi.on("before_agent_start", (event) => {
 		const key = systemPromptText(event.systemPrompt);
 		if (!key) return;
-		const agentsPath = resolveAgentsMdPath();
-		const agentsAppend = extractAgentsAppend();
-		const contextFiles = agentsPath && agentsAppend ? [{ path: agentsPath, content: agentsAppend }] : [];
-		const skillsBlock = extractSkillsBlock(key);
-		promptCaptures.record(key, deriveCaptureInput(event.systemPrompt, { contextFiles, skillsBlock }));
+		const captureInput = deriveCaptureInput(event.systemPrompt);
+		promptCaptures.record(key, captureInput);
 		debug(
 			`before_agent_start: recorded prompt key=${key.length}chars`,
-			`blocks=${event.systemPrompt.length} agents=${Boolean(agentsAppend)} skills=${Boolean(skillsBlock)}`,
-			`subagentBlock=${event.systemPrompt.some((b) => b.includes("assigned to you by the main agent"))} captures=${promptCaptures.size}`,
+			`blocks=${event.systemPrompt.length} contexts=${captureInput.contextFiles.length} skills=${captureInput.skills.length}`,
+			`custom=${Boolean(captureInput.custom)} append=${Boolean(captureInput.append)} captures=${promptCaptures.size}`,
 		);
 	});
 
