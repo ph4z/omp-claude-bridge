@@ -2,7 +2,7 @@
 	"name": "omp-claude-bridge",
 	"version": "0.8.1",
 	"private": false,
-	"description": "Oh My Pi extension that runs Claude Code (via the Claude Agent SDK) as a model provider, adds an AskClaude delegation tool, and lets you force the 1M / 200K context window per provider.",
+	"description": "Oh My Pi extension that runs Claude Code via the Claude Agent SDK as a first-class provider with catalogue-driven model and context discovery.",
 	"keywords": [
 		"omp-package",
 		"oh-my-pi",
@@ -39,7 +39,8 @@
 	"scripts": {
 		"test": "node --import tsx --test tests/unit-*.mjs",
 		"test:unit": "node --import tsx --test tests/unit-*.mjs",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"smoke:context": "node --import tsx scripts/runtime-context-smoke.ts"
 	},
 	"type": "module",
 	"dependencies": {
