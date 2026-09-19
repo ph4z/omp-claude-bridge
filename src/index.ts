@@ -23,7 +23,8 @@ import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
-import { sharedPromptCaptures, releaseSharedPromptCaptures, projectPromptCapture, deriveCaptureInput } from "./prompt-capture.js";
+import { sharedPromptCaptures, releaseSharedPromptCaptures, deriveCaptureInput } from "./prompt-capture.js";
+import { resolveProviderPromptTransport } from "./prompt-transport.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -1233,17 +1234,25 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	// Resolve the received system prompt against what OMP recorded at
-	// before_agent_start and project only the portable parts (context files,
-	// skills, custom/append, and — the fix — a subagent's role/context block with
-	// native task.context) behind Claude Code's own claude_code preset. A prompt
-	// that matches no capture and embeds none fails closed: losing the user's
-	// instructions silently is worse than a failed turn (see prompt-capture.ts).
-	let systemPromptAppend: string | undefined;
+	// Normal coding-agent turns must resolve through before_agent_start captures
+	// and remain fail-closed on a miss. OMP also issues provider-direct utility
+	// completions (notably auto-thinking) that never emit before_agent_start; those
+	// are transported as their exact system prompt instead of being mistaken for a
+	// lost capture. See prompt-transport.ts.
+	let promptTransport = {
+		mode: "agent-preset" as const,
+		append: undefined as string | undefined,
+	};
 	if (appendSystemPrompt) {
 		try {
-			const capture = promptCaptures.resolveOrDerive(systemPromptText(context.systemPrompt));
-			systemPromptAppend = capture ? projectPromptCapture(capture) : undefined;
+			promptTransport = resolveProviderPromptTransport(
+				promptCaptures,
+				systemPromptText(context.systemPrompt),
+				{
+					cwd: options?.cwd,
+					initiatorOverride: options?.initiatorOverride,
+				},
+			) as typeof promptTransport;
 		} catch (err) {
 			const msg = errorMessage(err);
 			debug("provider: prompt-capture fail-closed:", msg);
@@ -1264,6 +1273,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			});
 			return stream;
 		}
+	}
+	const systemPromptAppend =
+		promptTransport.mode === "agent-preset" ? promptTransport.append : undefined;
+	if (promptTransport.mode === "verbatim-side-request") {
+		debug(
+			"provider: uncaptured side request; forwarding system prompt verbatim",
+			`len=${promptTransport.systemPrompt?.length ?? 0}`,
+			`cwd=${options?.cwd ?? "<none>"} initiator=${options?.initiatorOverride ?? "<none>"}`,
+		);
 	}
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
@@ -1311,10 +1329,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		tools: [],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
+		systemPrompt: promptTransport.mode === "verbatim-side-request"
+			? promptTransport.systemPrompt
+			: {
+					type: "preset", preset: "claude_code",
+					append: systemPromptAppend ? systemPromptAppend : undefined,
+				},
 		extraArgs,
 		...(effort ? { effort: effort as EffortLevel } : {}),
 		...(settingSources ? { settingSources } : {}),
