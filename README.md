@@ -245,13 +245,23 @@ under one extension instance while the parent-owned provider callback resolves i
 registry is released only when that provider-owning instance shuts down; a child-session
 shutdown cannot clear captures still needed by the parent.
 
-If a received system prompt matches no capture and embeds no known capture, the bridge
-**fails closed** with a diagnostic instead of quietly calling Claude Code with missing
-instructions — a recoverable failed turn is better than silently losing the user's,
-project's, or agent's instructions. Isolated flows that never pass through
-`before_agent_start` (compaction/branch-summary) keep their own explicit prompts and are
-not routed through this capture path. The AskClaude tool continues to forward the skills
-block as before.
+If a received **coding-agent turn** system prompt matches no capture and embeds no
+known capture, the bridge **fails closed** with a diagnostic instead of quietly calling
+Claude Code with missing instructions — a recoverable failed turn is better than silently
+losing the user's, project's, or agent's instructions.
+
+OMP also performs provider-direct utility completions that intentionally never traverse
+`before_agent_start` — auto-thinking classification is one example. OMP's normal agent
+loop always supplies a `cwd` to provider options, while these utility calls do not;
+explicit side requests are additionally marked `initiatorOverride="agent"`. For such
+uncaptured side requests the bridge sends the exact received system prompt verbatim,
+without the `claude_code` coding-agent preset. This preserves the utility call's intended
+classifier/summarizer semantics while keeping missing captures fail-closed for real agent
+turns. A side request that deliberately reuses an exact known capture still receives the
+normal portable projection.
+
+Isolated flows owned directly by the bridge (compaction/branch-summary) keep their own
+explicit prompts. The AskClaude tool continues to forward the skills block as before.
 
 ## Debugging
 

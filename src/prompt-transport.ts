@@ -1,0 +1,66 @@
+import { PromptCaptures, projectPromptCapture } from "./prompt-capture.js";
+
+export interface PromptTransportOptions {
+	cwd?: string;
+	initiatorOverride?: string;
+}
+
+export type ProviderPromptTransport =
+	| {
+			mode: "agent-preset";
+			append?: string;
+	  }
+	| {
+			mode: "verbatim-side-request";
+			systemPrompt?: string;
+	  };
+
+/**
+ * Resolve how one provider call should transport its system prompt to Claude Code.
+ *
+ * Normal OMP coding-agent turns always carry a cwd through agent-loop and are
+ * expected to have traversed before_agent_start. They therefore MUST resolve
+ * through PromptCaptures; a miss remains fail-closed.
+ *
+ * OMP also invokes providers directly through completeSimple() for utility/side
+ * requests such as auto-thinking. Those calls do not traverse
+ * before_agent_start, so no capture can exist by design. They normally have no
+ * cwd; explicit agent-attributed side requests use initiatorOverride="agent".
+ * For those calls the exact provider Context system prompt is already the
+ * authoritative prompt, so send it verbatim instead of layering it onto the
+ * claude_code coding-agent preset.
+ */
+export function resolveProviderPromptTransport(
+	captures: PromptCaptures,
+	systemPrompt: string | undefined,
+	options?: PromptTransportOptions,
+): ProviderPromptTransport {
+	const isSideRequest = options?.cwd === undefined || options?.initiatorOverride === "agent";
+
+	if (isSideRequest) {
+		/*
+		 * Prefer a known capture when one exists: a side request can deliberately
+		 * reuse a previously assembled agent prompt, in which case projection
+		 * still avoids duplicating the OMP harness. An uncaptured side request is
+		 * expected and carries its exact prompt verbatim.
+		 */
+		const known = captures.resolve(systemPrompt);
+		if (known) {
+			return {
+				mode: "agent-preset",
+				append: projectPromptCapture(known) || undefined,
+			};
+		}
+
+		return {
+			mode: "verbatim-side-request",
+			systemPrompt: systemPrompt || undefined,
+		};
+	}
+
+	const capture = captures.resolveOrDerive(systemPrompt);
+	return {
+		mode: "agent-preset",
+		append: capture ? projectPromptCapture(capture) || undefined : undefined,
+	};
+}
