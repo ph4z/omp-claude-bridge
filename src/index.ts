@@ -24,7 +24,7 @@ import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
 import { sharedPromptCaptures, releaseSharedPromptCaptures, deriveCaptureInput } from "./prompt-capture.js";
-import { resolveProviderPromptTransport } from "./prompt-transport.js";
+import { resolveProviderPromptTransport, type ProviderPromptTransport } from "./prompt-transport.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -1239,9 +1239,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// completions (notably auto-thinking) that never emit before_agent_start; those
 	// are transported as their exact system prompt instead of being mistaken for a
 	// lost capture. See prompt-transport.ts.
-	let promptTransport = {
-		mode: "agent-preset" as const,
-		append: undefined as string | undefined,
+	let promptTransport: ProviderPromptTransport = {
+		mode: "agent-preset",
+		append: undefined,
 	};
 	if (appendSystemPrompt) {
 		try {
@@ -1252,7 +1252,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					cwd: options?.cwd,
 					initiatorOverride: options?.initiatorOverride,
 				},
-			) as typeof promptTransport;
+			);
 		} catch (err) {
 			const msg = errorMessage(err);
 			debug("provider: prompt-capture fail-closed:", msg);
