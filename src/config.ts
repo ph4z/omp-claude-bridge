@@ -4,10 +4,11 @@
 // console.error, empty object returned) so the extension always starts.
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { CONFIG_DIR_NAME } from "@oh-my-pi/pi-utils";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+
+const CONFIG_DIR_NAME = ".omp";
 
 export interface Config {
 	askClaude?: {
