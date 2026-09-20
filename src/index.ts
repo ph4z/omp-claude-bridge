@@ -1,19 +1,13 @@
-import { StringEnum, Type, getModels, type AssistantMessage, type AssistantMessageEventStream, type Context, type Model, type SimpleStreamOptions, type Tool, type Usage } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
-import * as piAi from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-ai-shim";
-import { type ExtensionAPI, type ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
-import { keyHint } from "@oh-my-pi/pi-coding-agent/modes/components/keybinding-hints";
-import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
-import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { compact } from "@oh-my-pi/pi-agent-core/compaction";
+import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions, Tool, Usage } from "@oh-my-pi/pi-ai";
+import type { CompactionEntry, ExtensionAPI, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
 import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
-import { Text } from "@oh-my-pi/pi-tui";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { buildRegisteredModels, buildModels, claudeCodeModelId, mapReasoningToClaudeEffort, resolveModel as _resolveModel } from "./models.js";
+import { buildRegisteredModels, buildModels, claudeCodeModelId, mapReasoningToClaudeEffort, resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -25,13 +19,15 @@ import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
 import { sharedPromptCaptures, releaseSharedPromptCaptures, deriveCaptureInput } from "./prompt-capture.js";
 import { resolveProviderPromptTransport, type ProviderPromptTransport } from "./prompt-transport.js";
+import {
+	compactWithCompleteImpl,
+	createHostAssistantMessageEventStream,
+	getHostAnthropicModels,
+	projectAskClaudeContext,
+	stringEnum,
+} from "./omp-18-compat.js";
 
-// Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
-const _piAi = piAi as any;
-const newAssistantMessageEventStream: () => AssistantMessageEventStream =
-	typeof _piAi.createAssistantMessageEventStream === "function"
-		? _piAi.createAssistantMessageEventStream
-		: () => new _piAi.AssistantMessageEventStream();
+type BridgeModel = ReturnType<typeof buildModels>[number];
 
 function calculateCost(model: Model<any>, usage: Usage): Usage["cost"] {
 	usage.cost.input = (model.cost.input / 1_000_000) * usage.input;
@@ -131,14 +127,7 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
 };
 
-// MODELS is discovered dynamically from OMP's Anthropic catalogue — see
-// buildModels in models.ts (family/revision parsing, newest-first ordering).
-const MODELS = buildModels(getModels("anthropic"));
 let providerSettings: NonNullable<Config["provider"]> = {};
-
-function resolveModel(input: string) {
-	return _resolveModel(MODELS, input);
-}
 
 // --- Error handling ---
 
@@ -339,7 +328,7 @@ function resultErrorText(message: SDKMessage): string {
 }
 
 function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	const stream = newAssistantMessageEventStream();
+	const stream = createHostAssistantMessageEventStream();
 	void runIsolatedSummary(model, context, options, stream);
 	return stream;
 }
@@ -1107,7 +1096,7 @@ async function consumeQuery(
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	const stream = newAssistantMessageEventStream();
+	const stream = createHostAssistantMessageEventStream();
 
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
@@ -1504,6 +1493,7 @@ async function promptAndWait(
 	prompt: string,
 	mode: "full" | "read" | "none",
 	toolCalls: Map<string, ToolCallState>,
+	models: BridgeModel[],
 	signal?: AbortSignal,
 	options?: {
 		systemPrompt?: string;
@@ -1517,7 +1507,7 @@ async function promptAndWait(
 ): Promise<{ responseText: string; stopReason: string }> {
 	const cwd = process.cwd();
 	const requestedModel = options?.model ?? "opus";
-	const model = resolveModel(requestedModel);
+	const model = resolveModel(models, requestedModel);
 	const modelId = model?.id ?? requestedModel;
 	const cliModel = model ? claudeCodeModelId(model) : modelId;
 
@@ -1674,11 +1664,11 @@ const PREVIEW_MAX_LINES = 6;
 
 let askClaudeToolName = "AskClaude";
 
-export default function (pi: ExtensionAPI) {
+export function registerBridge(pi: ExtensionAPI, models: BridgeModel[], configOverride?: Config) {
 	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
 	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
-	const config = loadConfig(process.cwd());
+	const config = configOverride ?? loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
 	for (const key of retiredProviderKeys(config)) {
@@ -1686,7 +1676,12 @@ export default function (pi: ExtensionAPI) {
 			`claude-bridge: provider.${key} is no longer used; context window is sourced from OMP's model catalogue`,
 		);
 	}
-	const registeredModels = buildRegisteredModels(MODELS);
+	// Provider registration happens before a session context exists, so ctx.models
+	// cannot be used here. OMP's canonical pi-ai compatibility root supplies the
+	// host-owned catalogue alias without creating a second pi-catalog instance.
+	const registeredModels = buildRegisteredModels(models);
+	const { Type } = pi.typebox;
+	const { Text, buildSessionContext, keyHint } = pi.pi;
 
 	// Session changes reset conversation state without releasing process-wide
 	// provider stream ownership. Child sessions must keep using the parent's
@@ -1717,13 +1712,12 @@ export default function (pi: ExtensionAPI) {
 		);
 		try {
 			reinjectPriorCompactionFileOps(event.branchEntries, event.preparation);
-			const compaction = await compact(
+			const compaction = await compactWithCompleteImpl(
 				event.preparation,
 				ctx.model,
-				undefined,
 				event.customInstructions,
 				event.signal,
-				{ completeImpl: isolatedCompleteImpl },
+				isolatedCompleteImpl,
 			);
 			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
 			return { compaction };
@@ -1836,9 +1830,9 @@ export default function (pi: ExtensionAPI) {
 	if (askConf?.enabled !== false) {
 		const askClaudeParams = Type.Object({
 			prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
-			mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),
+			mode: Type.Optional(stringEnum(Type, modeValues, modeDesc)),
 			model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
-			thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
+			thinking: Type.Optional(stringEnum(Type, ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, "Thinking effort level. Omit to use Claude Code's default.")),
 			isolated: Type.Optional(Type.Boolean({ description: "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the full conversation history." })),
 		});
 		pi.registerTool<typeof askClaudeParams>({
@@ -1919,13 +1913,17 @@ export default function (pi: ExtensionAPI) {
 				}, 1000);
 
 				try {
-					const result = await promptAndWait(askParams.prompt, mode, toolCalls, signal, {
+					const result = await promptAndWait(askParams.prompt, mode, toolCalls, models, signal, {
 						systemPrompt: systemPromptText(ctx.getSystemPrompt()),
 						appendSkills: askConf?.appendSkills,
 						model: askParams.model,
 						thinking: askParams.thinking,
 						isolated,
-						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
+						context: projectAskClaudeContext(
+							isolated,
+							ctx.sessionManager.getBranch(),
+							buildSessionContext,
+						) as Context["messages"] | undefined,
 					});
 					clearInterval(progressInterval);
 					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });
@@ -1952,3 +1950,13 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 }
+
+export function registerBridgeFromHost(
+	pi: ExtensionAPI,
+	readHostModels: typeof getHostAnthropicModels = getHostAnthropicModels,
+	configOverride?: Config,
+) {
+	return registerBridge(pi, buildModels(readHostModels()), configOverride);
+}
+
+export default registerBridgeFromHost;

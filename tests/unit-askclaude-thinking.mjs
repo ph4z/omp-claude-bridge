@@ -10,7 +10,7 @@ const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8")
 test("AskClaude thinking schema exposes the full effort ladder including max", () => {
 	assert.match(
 		source,
-		/thinking: Type\.Optional\(StringEnum\(\["off", "minimal", "low", "medium", "high", "xhigh", "max"\] as const/,
+		/thinking: Type\.Optional\(stringEnum\(Type, \["off", "minimal", "low", "medium", "high", "xhigh", "max"\] as const/,
 	);
 });
 
