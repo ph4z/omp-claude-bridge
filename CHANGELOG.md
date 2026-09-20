@@ -30,6 +30,56 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Fixed
+- OMP-native tools reaching a `claude-bridge` turn. The bridge exposes OMP's
+  tools through an in-process MCP server, and the Claude Agent SDK renders that
+  server's `tools/list` with its own bundled Zod (4.4.3) while the schemas are
+  built with whichever Zod the host installed for the plugin — `zod@^4` floats,
+  and OMP's plugin install resolves 4.6.5. `_zod.processJSONSchema` and
+  `_zod.parent` already exist in 4.4.3, so this is not a general "Zod >= 4.5"
+  incompatibility: the break is one processor. From **Zod 4.5.3** the record
+  JSON Schema processor requires `ctx.deferred` on the conversion context, and
+  4.4.3's `initializeContext()` does not allocate that field, so a
+  `z.record(...)` built by a host Zod >= 4.5.3 throws
+  `ctx.deferred.push` inside the SDK's walker. Claude Code drops *every* tool of
+  a server whose `tools/list` fails, so one object-typed parameter (bash's `env`) took
+  the whole `mcp__custom-tools__*` namespace off the turn: `task` and the rest
+  were reported by the model as nonexistent and OMP fell back to direct
+  execution. Each property now pins the JSON Schema OMP already declared
+  (`_zod.toJSONSchema`), which both Zod builds consult before dispatching to any
+  processor, so the rendering no longer depends on the two versions agreeing
+  (regression-tested through a real SDK MCP server against pinned host Zod
+  4.4.3/4.5.2/4.5.3/4.6.5, the committed matrix: 4.5.2 is the last version the
+  unpinned path renders on, 4.5.3 and 4.6.5 throw without the pin, and all four
+  succeed with it). This gives exact *property-level* preservation —
+  every property whose schema is a plain JSON object, and the `required` list,
+  are emitted as OMP declared them, including property-level `anyOf`, `default`,
+  `enum` and values in data positions — but not byte-for-byte preservation of
+  the root schema, since `createSdkMcpServer` still rebuilds the top-level
+  object wrapper, drops root-level keywords (`additionalProperties` on every OMP
+  18.2.6 tool, plus a root `description` on `todo`) and adds its own `$schema`,
+  exactly as before this change. Property schemas that cannot be pinned safely
+  degrade to a permissive `{}` and are reported rather than throwing: a
+  sub-schema that is not a plain JSON object (JSON Schema allows `true`/`false`,
+  and malformed input can hold any JSON value), a cyclic or otherwise
+  non-JSON-safe schema, or excessive nesting — both traversals are
+  depth-bounded, so neither can throw a `RangeError` out of the provider turn.
+  An unresolved `$ref` *keyword* is dropped (its target `$defs` lives on the
+  root the SDK rebuilds) while a property legitimately *named* `$ref` is
+  preserved, since map members are property names rather than keywords.
+- Silent loss of the whole OMP tool surface. A server that fails `tools/list`
+  still reports itself `connected`, so the bridge now compares the tools Claude
+  Code advertises at `init` against the ones it registered and reports the
+  difference (debug log, OMP notification, diagnostic dump) instead of running
+  the turn toolless. Repeats of the same condition are deduplicated across
+  continuation/replay queries; a different missing set reports again, and a
+  healthy init clears the memory so a later failure is never suppressed.
+  `createSdkMcpServer` is now called with `alwaysLoad: true`, which keeps OMP's
+  tools out of Claude Code's Tool Search deferral — both so they always reach
+  the turn and so the advertised list stays a sound signal for this detector.
+  Tool names are compared exactly first, then case-insensitively when exactly
+  one registered name folds to that key, matching `mapToolName` elsewhere in the
+  bridge without ever letting one advertised spelling vouch for two distinct
+  registered names.
 - Faithful system-prompt transport. The provider previously replaced OMP's
   assembled system prompt with Claude Code's `claude_code` preset plus only
   AGENTS.md and the skills block, so a subagent's native `task.context` (e.g. a

@@ -37,10 +37,11 @@
 		"assets"
 	],
 	"scripts": {
+		"smoke:context": "node --import tsx scripts/runtime-context-smoke.ts",
 		"test": "node --import tsx --test tests/unit-*.mjs",
+		"test:crossversion": "node --import tsx --test tests/crossversion-*.mjs",
 		"test:unit": "node --import tsx --test tests/unit-*.mjs",
-		"typecheck": "tsc --noEmit",
-		"smoke:context": "node --import tsx scripts/runtime-context-smoke.ts"
+		"typecheck": "tsc --noEmit"
 	},
 	"type": "module",
 	"dependencies": {
@@ -85,7 +86,11 @@
 		"@oh-my-pi/pi-utils": "18.2.6",
 		"@types/node": "^24.13.2",
 		"tsx": "^4.22.4",
-		"typescript": "^6.0.3"
+		"typescript": "^6.0.3",
+		"zod-4-4-3": "npm:zod@4.4.3",
+		"zod-4-5-2": "npm:zod@4.5.2",
+		"zod-4-5-3": "npm:zod@4.5.3",
+		"zod-4-6-5": "npm:zod@4.6.5"
 	},
 	"trustedDependencies": [
 		"esbuild"

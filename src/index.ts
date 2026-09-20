@@ -1,6 +1,6 @@
 import type { AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions, Tool, Usage } from "@oh-my-pi/pi-ai";
 import type { CompactionEntry, ExtensionAPI, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKSystemMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
@@ -13,7 +13,8 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, retiredProviderKeys, type Config } from "./config.js";
-import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
+import { jsonSchemaToZodShape, type WireSchemaDegradationReport } from "./typebox-to-zod.js";
+import { ToolAvailabilityMonitor } from "./tool-availability.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
@@ -722,10 +723,11 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 // correct query's state while multiple queries run concurrently.
 function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ReturnType<typeof createSdkMcpServer>> | undefined {
 	if (!tools.length) return undefined;
+	const degradations: (WireSchemaDegradationReport & { tool: string })[] = [];
 	const mcpTools = tools.map((tool) => ({
 		name: tool.name,
 		description: tool.description,
-		inputSchema: jsonSchemaToZodShape(tool.parameters),
+		inputSchema: jsonSchemaToZodShape(tool.parameters, report => degradations.push({ ...report, tool: tool.name })),
 		handler: async () => {
 			const toolCallId = queryCtx.turnToolCallIds[queryCtx.nextHandlerIdx++];
 			if (!toolCallId) debug(`WARNING: mcp handler ${tool.name} has no toolCallId (idx=${queryCtx.nextHandlerIdx - 1}, available=${queryCtx.turnToolCallIds.length})`);
@@ -741,7 +743,21 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 			});
 		},
 	}));
-	const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "1.0.0", tools: mcpTools });
+	// A property whose schema cannot be pinned verbatim is substituted rather
+	// than dropped, so it never costs the server its whole tool list. It is not
+	// swallowed either: record it once per query so a schema OMP starts emitting
+	// that this bridge cannot represent is visible without a debug build.
+	if (degradations.length > 0) {
+		debug(`WARNING: substituted wire schema for ${degradations.length} propert${degradations.length === 1 ? "y" : "ies"}: ` +
+			degradations.map(d => `${d.tool}.${d.property} (${d.reason})`).join(", "));
+		diagDump("wire_schema_degraded", { degradations });
+	}
+	// `alwaysLoad` marks every tool `_meta['anthropic/alwaysLoad']`, so Claude
+	// Code never defers them behind its Tool Search tool. That keeps OMP's tools
+	// on the turn regardless of Tool Search availability, and keeps the init
+	// message's advertised tool list a sound signal for the availability
+	// detector (see tool-availability.ts).
+	const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "1.0.0", alwaysLoad: true, tools: mcpTools });
 	return { [MCP_SERVER_NAME]: server };
 }
 
@@ -1030,6 +1046,28 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	}
 }
 
+// Claude Code can drop OMP's whole tool surface without failing the turn (see
+// tool-availability.ts). The monitor decides what is worth reporting; this
+// wrapper fans a first sighting out to debug log + piUI notify + diagDump, and
+// keeps a debug line for every occurrence so repeats stay traceable.
+const toolAvailability = new ToolAvailabilityMonitor();
+
+function reportToolAvailability(init: SDKSystemMessage, customToolNameToPi: Map<string, string>): void {
+	const expected = [...new Set(customToolNameToPi.values())].map(name => `${MCP_TOOL_PREFIX}${name}`);
+	const result = toolAvailability.inspect(init, expected, MCP_SERVER_NAME);
+	if (!result || result.missing.length === 0) return;
+	debug(`WARNING: ${result.message}${result.firstReport ? "" : " (already reported)"}`);
+	if (!result.firstReport) return;
+	piUI?.notify(`Claude bridge: ${result.message}`, "warning");
+	diagDump("mcp_tools_unavailable", {
+		status: result.status,
+		mcpServers: init.mcp_servers ?? null,
+		expected: result.expected,
+		advertised: result.advertised,
+		missing: result.missing,
+	});
+}
+
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
  *  Runs until the query ends. Per turn, the SDK yields stream_events (deltas), then
  *  an assistant message (completed blocks). On tool_use, the stream is ended by
@@ -1068,8 +1106,11 @@ async function consumeQuery(
 				}
 				break;
 			case "system":
-				if ((message as any).subtype === "init" && (message as any).session_id) {
-					capturedSessionId = (message as any).session_id;
+				// Narrowed, not cast: if the SDK renames `tools`/`mcp_servers` the
+				// detector must fail to compile rather than silently no-op.
+				if (message.subtype === "init") {
+					if (message.session_id) capturedSessionId = message.session_id;
+					reportToolAvailability(message, customToolNameToPi);
 				}
 				break;
 			case "user":
