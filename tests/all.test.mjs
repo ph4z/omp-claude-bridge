@@ -8,3 +8,8 @@ import "./unit-prompt-capture.mjs";
 import "./unit-prompt-transport.mjs";
 import "./unit-provider-registration.mjs";
 import "./unit-rate-limit.mjs";
+import "./unit-tool-availability.mjs";
+import "./unit-tool-schema.mjs";
+// Cross-version Zod matrix: kept out of the `unit-*` glob (it loads four pinned
+// Zod copies) but part of the default `bun test` run.
+import "./crossversion-zod-wire-schema.mjs";

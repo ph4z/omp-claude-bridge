@@ -28,3 +28,11 @@ jobs:
 
       - name: Unit tests
         run: bun run test
+
+      # Kept a separate step rather than folded into the unit glob: this is the
+      # Zod cross-version compatibility boundary (SDK-bundled 4.4.3 walker vs a
+      # newer host Zod), and it should stay visible by name in CI output. Runs
+      # the committed 4.4.3 / 4.5.2 / 4.5.3 / 4.6.5 matrix from pinned
+      # devDependency aliases, so it downloads nothing beyond `bun install`.
+      - name: Cross-version Zod compatibility
+        run: bun run test:crossversion
