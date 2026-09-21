@@ -3,13 +3,15 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import * as codingAgent from "@oh-my-pi/pi-coding-agent";
 import * as typebox from "@oh-my-pi/pi-coding-agent/extensibility/legacy-typebox";
-import { registerBridge, registerBridgeFromHost } from "../src/index.ts";
+import { __test, registerBridge, registerBridgeFromHost } from "../src/index.ts";
 import { buildModels } from "../src/models.ts";
 import {
 	compactWithCompleteImpl,
 	projectAskClaudeContext,
 	stringEnum,
 } from "../src/omp-18-compat.ts";
+import { PROMPT_CAPTURES_KEY } from "../src/prompt-capture.ts";
+import { resolveProviderPromptTransport } from "../src/prompt-transport.ts";
 
 const theme = {
 	fg: (_color, value) => value,
@@ -54,7 +56,7 @@ function fakeExtensionApi() {
 	};
 }
 
-test("OMP 18.2.6 injected surfaces register the provider and AskClaude renderer/schema", async () => {
+test("OMP 18.2.8 injected surfaces register the provider and AskClaude renderer/schema", async () => {
 	const fake = fakeExtensionApi();
 	const models = buildModels([
 		catalogModel("claude-opus-5"),
@@ -181,7 +183,42 @@ test("runtime host imports stay on the canonical OMP compatibility boundary", ()
 		"@oh-my-pi/pi-tui",
 		"@oh-my-pi/pi-utils",
 	]) {
-		assert.equal(pkg.devDependencies[name], "18.2.6", name);
+		assert.equal(pkg.devDependencies[name], "18.2.8", name);
 		assert.equal(pkg.dependencies[name], undefined, `${name} must not be a runtime dependency`);
 	}
+});
+
+test("a subagent session shutdown leaves the parent's prompt capture usable", async () => {
+	// OMP 18.2.8 re-binds this already-imported module for subagent sessions
+	// (sdk.ts `preloadedPreparedExtensions`, fed by task/executor.ts), so both
+	// binds share one streamSimple and one capture registry.
+	const parent = fakeExtensionApi();
+	const subagent = fakeExtensionApi();
+	const models = buildModels([catalogModel("claude-opus-5")]);
+	registerBridge(parent.api, models, {});
+	registerBridge(subagent.api, models, {});
+
+	// The parent's user turn traverses before_agent_start (agent-session.ts
+	// #prepareAgentStart); an automatic continuation later will not.
+	const blocks = [
+		"<conventions>\nOMP-HARNESS\n</conventions>\n\n§ Role\nHelpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.",
+		'PROJECT\n\n<repo-rules>\nMUST follow these context files for all tasks:\n<file path="/repo/AGENTS.md">\nPARENT-CONTEXT\n</file>\n</repo-rules>\n\n<critical>\n- Each response MUST advance the task; completion only stopping condition.\ngenerated\n</critical>\n\nPARENT-APPEND',
+	];
+	for (const handler of parent.handlers.get("before_agent_start") ?? []) {
+		await handler({ systemPrompt: blocks }, {});
+	}
+
+	for (const handler of subagent.handlers.get("session_shutdown") ?? []) await handler({}, {});
+
+	assert.equal(globalThis[PROMPT_CAPTURES_KEY], __test.promptCaptures());
+	const transport = resolveProviderPromptTransport(__test.promptCaptures(), blocks.join("\n\n"), {
+		cwd: "/repo",
+	});
+	assert.equal(transport.mode, "agent-preset");
+	assert.match(transport.append, /PARENT-CONTEXT/);
+	assert.match(transport.append, /PARENT-APPEND/);
+
+	for (const handler of parent.handlers.get("session_shutdown") ?? []) await handler({}, {});
+	assert.equal(globalThis[PROMPT_CAPTURES_KEY], undefined, "the last shutdown unpublishes the registry");
+	assert.equal(__test.promptCaptures().size, 0, "the next session starts from an empty registry");
 });

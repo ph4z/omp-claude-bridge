@@ -353,18 +353,21 @@ function projectCustom(capture: PromptCapture, visiting: Set<PromptCapture>): st
 }
 
 // --- Process-global shared registry ---------------------------------------
+// OMP re-binds one extension module evaluation across sessions: a subagent
+// session gets a fresh ExtensionAPI but the already-imported factory
+// (`preloadedPreparedExtensions`), and a re-loaded child may instead evaluate
+// the module again while the shared ModelRegistry's streamSimple still belongs
+// to the parent instance (see provider-registration.ts). Either way a prompt
+// recorded at one session's before_agent_start must be resolvable from the
+// provider callback serving another. A module-local `new PromptCaptures()`
+// would not span both, so the registry lives in a Symbol.for() global keyed
+// like the shared provider stream.
 //
-// OMP child sessions may re-load this extension while the shared ModelRegistry's
-// streamSimple still belongs to the parent instance (see provider-registration.ts).
-// A child records its prompt in whichever module instance handled its
-// before_agent_start; the provider callback that later resolves it may run from
-// another instance. A single module-local `new PromptCaptures()` would not see
-// both, so the registry lives in a Symbol.for() global keyed like the shared
-// provider stream.
-//
-// The registry is released only when the extension instance that owns the shared
-// provider stream shuts down. Child-session shutdown must NOT clear it while the
-// parent provider callback can still need child captures.
+// The registry is released only once the last session bound to the shared
+// provider registration has shut down. A child/subagent session leaving while
+// its parent still runs MUST NOT clear it: the parent-owned provider callback
+// resolves the parent's in-flight turn and any still-draining child captures
+// from it.
 
 export const PROMPT_CAPTURES_KEY = Symbol.for("claude-bridge:promptCaptures");
 

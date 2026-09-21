@@ -18,7 +18,7 @@ import { ToolAvailabilityMonitor } from "./tool-availability.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 import { rateLimitNotice } from "./rate-limit.js";
 import { registerSharedProvider, releaseSharedProvider } from "./provider-registration.js";
-import { sharedPromptCaptures, releaseSharedPromptCaptures, deriveCaptureInput } from "./prompt-capture.js";
+import { sharedPromptCaptures, releaseSharedPromptCaptures, deriveCaptureInput, type PromptCaptureDiagnostic, type PromptCaptures } from "./prompt-capture.js";
 import { resolveProviderPromptTransport, type ProviderPromptTransport } from "./prompt-transport.js";
 import {
 	compactWithCompleteImpl,
@@ -107,22 +107,31 @@ function diagDump(label: string, data: Record<string, unknown>) {
 // --- Constants ---
 
 // Provider callback ownership across parent/child sessions is handled by
-// provider-registration.ts and is released only by the owning session shutdown.
+// provider-registration.ts and is released only once the last bound session
+// shuts down.
 
-// Process-global capture registry: a child records its assembled prompt at
+// Process-global capture registry: a session records its assembled prompt at
 // before_agent_start (possibly from a different extension module instance), and
 // the provider — whose streamSimple may be parent-owned — projects the portable
 // parts behind Claude Code's preset. Shared via Symbol.for so both operations see
 // the same captures regardless of which instance handled each. See prompt-capture.ts.
-const promptCaptures = sharedPromptCaptures(globalThis as unknown as Record<symbol, unknown>, {
-	onDiagnose: (d) => {
+//
+// Resolved per use rather than snapshotted at module evaluation: the last
+// session's shutdown unpublishes the registry, and a module instance holding a
+// stale handle would then record into an object no other instance can resolve.
+const promptCaptureOptions = {
+	onDiagnose: (d: PromptCaptureDiagnostic) => {
 		const first = d.matches[0];
 		debug(
 			`prompt-capture: no match for ${d.systemPrompt.length}-char system prompt`,
 			first ? `closest key ${first.key.length} chars, diverges at ${first.firstDivergent}` : "no known captures",
 		);
 	},
-});
+};
+
+function promptCaptures(): PromptCaptures {
+	return sharedPromptCaptures(globalThis as unknown as Record<symbol, unknown>, promptCaptureOptions);
+}
 
 const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 	read: "read", write: "write", edit: "edit", bash: "bash",
@@ -622,6 +631,8 @@ export const __test = {
 	getSharedSession() {
 		return sharedSession;
 	},
+	/** Resolves the exact registry the provider callback would use right now. */
+	promptCaptures,
 	syncSharedSession,
 };
 
@@ -1274,9 +1285,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		append: undefined,
 	};
 	if (appendSystemPrompt) {
+		const captures = promptCaptures();
 		try {
 			promptTransport = resolveProviderPromptTransport(
-				promptCaptures,
+				captures,
 				systemPromptText(context.systemPrompt),
 				{
 					cwd: options?.cwd,
@@ -1289,7 +1301,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			diagDump("prompt_capture_failclosed", {
 				error: msg,
 				systemPromptLen: systemPromptText(context.systemPrompt)?.length ?? 0,
-				knownCaptures: promptCaptures.size,
+				knownCaptures: captures.size,
 			});
 			piUI?.notify(`Claude bridge: ${msg}`, "error");
 			queueMicrotask(() => {
@@ -1311,6 +1323,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			"provider: uncaptured side request; forwarding system prompt verbatim",
 			`len=${promptTransport.systemPrompt?.length ?? 0}`,
 			`cwd=${options?.cwd ?? "<none>"} initiator=${options?.initiatorOverride ?? "<none>"}`,
+		);
+	} else {
+		debug(
+			"provider: prompt-transport agent-preset",
+			`appendLen=${systemPromptAppend?.length ?? 0}`,
+			`cwd=${options?.cwd ?? "<none>"} lastMsgRole=${lastMsgRole ?? "<none>"}`,
 		);
 	}
 
@@ -1739,9 +1757,9 @@ export function registerBridge(pi: ExtensionAPI, models: BridgeModel[], configOv
 	pi.on("session_branch", () => resetSharedSession("session_branch"));
 	pi.on("session_shutdown", () => {
 		resetSharedSession("session_shutdown");
-		if (releaseSharedProvider(streamClaudeAgentSdk)) {
-			releaseSharedPromptCaptures(promptCaptures);
-			debug("session_shutdown: released provider stream ownership + prompt captures");
+		if (releaseSharedProvider()) {
+			releaseSharedPromptCaptures(promptCaptures());
+			debug("session_shutdown: last bound session left; released provider stream + prompt captures");
 		}
 	});
 
@@ -1801,11 +1819,12 @@ export function registerBridge(pi: ExtensionAPI, models: BridgeModel[], configOv
 		const key = systemPromptText(event.systemPrompt);
 		if (!key) return;
 		const captureInput = deriveCaptureInput(event.systemPrompt);
-		promptCaptures.record(key, captureInput);
+		const captures = promptCaptures();
+		captures.record(key, captureInput);
 		debug(
 			`before_agent_start: recorded prompt key=${key.length}chars`,
 			`blocks=${event.systemPrompt.length} contexts=${captureInput.contextFiles.length} skills=${captureInput.skills.length}`,
-			`custom=${Boolean(captureInput.custom)} append=${Boolean(captureInput.append)} captures=${promptCaptures.size}`,
+			`custom=${Boolean(captureInput.custom)} append=${Boolean(captureInput.append)} captures=${captures.size}`,
 		);
 	});
 
