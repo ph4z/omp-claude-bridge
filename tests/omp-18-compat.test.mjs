@@ -12,6 +12,7 @@ import {
 } from "../src/omp-18-compat.ts";
 import { PROMPT_CAPTURES_KEY } from "../src/prompt-capture.ts";
 import { resolveProviderPromptTransport } from "../src/prompt-transport.ts";
+import { defaultHarnessBlock } from "./fixtures/omp-system-prompts.mjs";
 
 const theme = {
 	fg: (_color, value) => value,
@@ -201,7 +202,7 @@ test("a subagent session shutdown leaves the parent's prompt capture usable", as
 	// The parent's user turn traverses before_agent_start (agent-session.ts
 	// #prepareAgentStart); an automatic continuation later will not.
 	const blocks = [
-		"<conventions>\nOMP-HARNESS\n</conventions>\n\n§ Role\nHelpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.",
+		defaultHarnessBlock({ generation: "18.2.8" }),
 		'PROJECT\n\n<repo-rules>\nMUST follow these context files for all tasks:\n<file path="/repo/AGENTS.md">\nPARENT-CONTEXT\n</file>\n</repo-rules>\n\n<critical>\n- Each response MUST advance the task; completion only stopping condition.\ngenerated\n</critical>\n\nPARENT-APPEND',
 	];
 	for (const handler of parent.handlers.get("before_agent_start") ?? []) {

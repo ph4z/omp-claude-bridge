@@ -41,6 +41,7 @@ import {
 	releaseSharedProvider,
 } from "../src/provider-registration.ts";
 import { resolveProviderPromptTransport } from "../src/prompt-transport.ts";
+import { defaultHarnessBlock } from "./fixtures/omp-system-prompts.mjs";
 
 const CWD = "/worktree/root";
 
@@ -88,26 +89,12 @@ function moduleInstance(globalState) {
 /**
  * Synthetic assembled prompt for lifecycle/capture testing.
  *
- * This fixture intentionally exercises context/skill/append projection and is
- * NOT a faithful copy of OMP 18.2.8's default harness. Default-harness stripping
- * is a separate pre-existing defect covered outside this regression.
+ * The harness block is a representative OMP default harness only so the capture
+ * derives the same shape a real turn does; what this file asserts is capture
+ * ownership across sessions, not harness recognition (see unit-prompt-harness.mjs).
  */
 function assembledPrompt(marker) {
-	const harness = [
-		"<conventions>",
-		"OMP-HARNESS-MUST-NOT-BE-APPENDED",
-		"</conventions>",
-		"",
-		"§ Role",
-		"Helpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.",
-		"",
-		"§ Runtime",
-		"# Skills & Rules",
-		"Matching skill → MUST read `skill://<name>` first.",
-		"<skills>",
-		`- bridge: SKILL-${marker}`,
-		"</skills>",
-	].join("\n");
+	const harness = defaultHarnessBlock({ generation: "18.2.6", skills: [`- bridge: SKILL-${marker}`] });
 	const project = [
 		"PROJECT",
 		"",

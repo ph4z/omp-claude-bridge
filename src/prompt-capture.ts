@@ -3,8 +3,8 @@
 // Claude Code keeps its own `claude_code` preset, which already carries the base
 // coding-agent harness (tool policy, workstation, general guidance). What it does
 // NOT carry is the portable material OMP assembled for THIS agent: project
-// context files (AGENTS.md/CLAUDE.md), the skills block, custom/append prompt
-// text, and — the bug this module fixes — a subagent's `§ Role`/`§ Context`
+// context files (AGENTS.md/CLAUDE.md), the skills/rules blocks, custom/append
+// prompt text, and — the bug this module fixes — a subagent's `§ Role`/`§ Context`
 // block, which is where native `task.context` (e.g. PRIOR_PHASE_RESULTS) lives.
 //
 // The bridge must project ONLY those portable parts behind the preset. Appending
@@ -34,6 +34,13 @@ export interface CapturedSkill {
 	disabled?: boolean;
 }
 
+/** One rendered OMP rules container from the generated default harness.
+ * `id` dedupes byte-identical rule blocks across prompt inheritance. */
+export interface CapturedRuleBlock {
+	id: string;
+	content: string;
+}
+
 /** The portable, structured inputs OMP used to assemble one agent's prompt. */
 export interface PromptCaptureInput {
 	/** Per-agent custom prose. For a subagent this is the `§ Role`/`§ Context`/`§ Plan`
@@ -45,6 +52,8 @@ export interface PromptCaptureInput {
 	contextFiles: Array<{ path: string; content: string }>;
 	/** Skills available to this agent, deduped by `id` on projection. */
 	skills: CapturedSkill[];
+	/** Rendered <generic-rules>/<domain-rules> blocks from OMP's default harness. */
+	rules?: CapturedRuleBlock[];
 }
 
 interface InheritedPrompt {
@@ -94,6 +103,7 @@ export class PromptCaptures {
 			assembledPrompt: systemPrompt,
 			contextFiles: [],
 			skills: [],
+			rules: [],
 			inherited: [],
 		};
 
@@ -101,6 +111,7 @@ export class PromptCaptures {
 		capture.append = input.append;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = input.skills.map((skill) => ({ ...skill }));
+		capture.rules = (input.rules ?? []).map((rule) => ({ ...rule }));
 		if (!existing || customChanged) {
 			capture.inherited = this.findInheritedPrompts(systemPrompt, input.custom);
 		}
@@ -156,7 +167,7 @@ export class PromptCaptures {
 			throw new Error(
 				`prompt-capture: no capture for this ${systemPrompt.length}-char system prompt, and it embeds none of the ${this.captures.size} known. `
 				+ `Closest known match diverges at offset ${matches[0]?.firstDivergent ?? "?"} (${matches.length ? matches[0].key.length : 0}-char key). `
-				+ `Claude Code would receive none of this turn's context files, skills or custom instructions. `
+				+ `Claude Code would receive none of this turn's context files, skills, rules or custom instructions. `
 				+ `The usual cause is an extension loaded after claude-bridge that rewrites the system prompt from before_agent_start, or OMP rebuilding the prompt outside before_agent_start.`,
 			);
 		}
@@ -274,6 +285,31 @@ export function collectPromptSkills(capture: PromptCapture): CapturedSkill[] {
 	return result;
 }
 
+/** Rule blocks reachable through inherited prompts, ancestor first, once per id. */
+export function collectPromptRules(capture: PromptCapture): CapturedRuleBlock[] {
+	const result: CapturedRuleBlock[] = [];
+	const seenIds = new Set<string>();
+	const visited = new Set<PromptCapture>();
+	const visiting = new Set<PromptCapture>();
+
+	const visit = (node: PromptCapture): void => {
+		if (visited.has(node)) return;
+		if (visiting.has(node)) throw new Error("Cyclic prompt inheritance");
+		visiting.add(node);
+		for (const edge of node.inherited) visit(edge.parent);
+		for (const rule of node.rules ?? []) {
+			if (seenIds.has(rule.id)) continue;
+			seenIds.add(rule.id);
+			result.push(rule);
+		}
+		visiting.delete(node);
+		visited.add(node);
+	};
+
+	visit(capture);
+	return result;
+}
+
 /** Context-file paths reachable through inherited prompts, once each. */
 export function collectPromptContextPaths(capture: PromptCapture): Set<string> {
 	const paths = new Set<string>();
@@ -299,11 +335,16 @@ function renderSkills(skills: CapturedSkill[]): string | undefined {
 	return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
+function renderRules(rules: CapturedRuleBlock[]): string | undefined {
+	const parts = rules.map((rule) => rule.content.trim()).filter((content) => content.length > 0);
+	return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): string | undefined {
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
 	visiting.add(capture);
 	try {
-		// Skills/context an ancestor already contributes are rendered via the
+		// Skills/rules/context an ancestor already contributes are rendered via the
 		// substituted parent projection inside `custom`; drop them from this node so
 		// inherited material appears exactly once.
 		const inheritedSkillIds = new Set(
@@ -313,6 +354,16 @@ function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): s
 		const ownSkills = capture.skills.filter((skill) => {
 			if (skill.disabled || inheritedSkillIds.has(skill.id) || ownSkillIds.has(skill.id)) return false;
 			ownSkillIds.add(skill.id);
+			return true;
+		});
+
+		const inheritedRuleIds = new Set(
+			capture.inherited.flatMap((edge) => collectPromptRules(edge.parent).map((rule) => rule.id)),
+		);
+		const ownRuleIds = new Set<string>();
+		const ownRules = (capture.rules ?? []).filter((rule) => {
+			if (inheritedRuleIds.has(rule.id) || ownRuleIds.has(rule.id)) return false;
+			ownRuleIds.add(rule.id);
 			return true;
 		});
 
@@ -330,6 +381,7 @@ function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): s
 		const parts = [
 			formatProjectContext(ownContextFiles),
 			renderSkills(ownSkills),
+			renderRules(ownRules),
 			custom,
 			capture.append,
 		].filter((part): part is string => Boolean(part && part.trim()));
@@ -393,11 +445,12 @@ export function releaseSharedPromptCaptures(
 	return true;
 }
 
-// --- OMP 18.2.2 assembled-array derivation ---------------------------------
+// --- Assembled-array derivation --------------------------------------------
 //
-// OMP 18.2.2 exposes only the final `systemPrompt: string[]` at
-// before_agent_start. It does NOT expose the structured customPrompt,
-// appendSystemPrompt, contextFiles, or skills that built it.
+// `before_agent_start` exposes only the final `systemPrompt: string[]` — still
+// true at OMP v18.2.8 (`extensibility/extensions/types.ts BeforeAgentStartEvent`).
+// It does NOT expose the structured customPrompt, appendSystemPrompt,
+// contextFiles, or skills that built it.
 //
 // Re-reading those inputs from disk is incorrect: a subagent can run in a
 // different cwd/worktree and createAgentSession can supply preloaded context
@@ -411,18 +464,59 @@ export function releaseSharedPromptCaptures(
 //   append + rendered context/skills/rules), not the default OMP harness.
 //
 // For the custom layout we keep the non-generated remainder of block 0 as a
-// single portable custom block because OMP 18.2.2 no longer exposes provenance
-// that would let us split customPrompt from appendSystemPrompt losslessly.
+// single portable custom block because OMP exposes no provenance that would let
+// us split customPrompt from appendSystemPrompt losslessly.
 
 /** Verbatim line unique to `subagent-system-prompt.md`; marks the array entry
  * that holds a subagent's role, assignment context, and plan. */
 export const SUBAGENT_BLOCK_MARKER = "You are operating on a piece of work assigned to you by the main agent.";
 
-const DEFAULT_HARNESS_MARKER = "<conventions>";
-const DEFAULT_HARNESS_ROLE_MARKER = "§ Role\nHelpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.";
+// OMP's bundled default harness (`packages/coding-agent/src/prompts/system/system-prompt.md`)
+// is generated, non-portable content: Claude Code's `claude_code` preset already
+// carries an equivalent base harness, so block 0 of a default-layout prompt must
+// be recognized and dropped rather than forwarded as portable custom text.
+//
+// Upstream reshaped the opening of that template twice, so recognition is a small
+// table of generations instead of one marker (verified against can1357/oh-my-pi):
+// - v18.2.7 and later (checked at v18.2.7, v18.2.8): no wrapper element; the RFC
+//   2119 line opens the block and the role sentence gained "You are a".
+// - v18.1.21 … v18.2.6 (checked at v18.2.2, v18.2.6): a `<conventions>` wrapper
+//   precedes the RFC 2119 line, role sentence "Helpful, trusted assistant for
+//   load-bearing changes …".
+// Releases up to v18.1.20 opened with `<system-conventions>`; that generation is
+// not recognized here and never was.
+interface DefaultHarnessGeneration {
+	/** Exact opening bytes of the rendered block. */
+	opening: string;
+	/** Exact sentence rendered under the `§ Role` heading. */
+	role: string;
+}
+
+const DEFAULT_HARNESS_GENERATIONS: readonly DefaultHarnessGeneration[] = [
+	{
+		opening: "RFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+		role: "You are a helpful, trusted assistant working in Oh My Pi coding harness.",
+	},
+	{
+		opening: "<conventions>\nRFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+		role: "Helpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.",
+	},
+];
+
+/** The `§` sections every supported generation renders unconditionally, in
+ *  template order. Unchanged since v17.2.15 — far more stable than the opening
+ *  and role lines above — which is why the structural verdict rests on them.
+ *  `§ Scratchpad` is excluded: it is gated on the `think` tool, so including it
+ *  would make the verdict depend on an agent's tool set. */
+const DEFAULT_HARNESS_SECTIONS = ["\n§ Runtime\n", "\n§ Tool Policy\n", "\n§ Workflow\n", "\n§ Delivery\n", "\n§ Critical\n"];
+
 const DEFAULT_SKILLS_MARKER = "Matching skill → MUST read `skill://<name>` first.";
 const CUSTOM_SKILLS_MARKER = "Skills are specialized knowledge. Scan descriptions for your task domain.";
 const LEGACY_SKILLS_MARKER = "The following skills provide specialized instructions for specific tasks.";
+const GENERIC_RULES_OPEN = "<generic-rules>";
+const GENERIC_RULES_CLOSE = "</generic-rules>";
+const DOMAIN_RULES_OPEN = "<domain-rules>";
+const DOMAIN_RULES_CLOSE = "</domain-rules>";
 const PROJECT_BLOCK_PREFIX = "PROJECT";
 const PROJECT_CRITICAL_MARKER = "<critical>\n- Each response MUST advance the task; completion only stopping condition.";
 
@@ -431,9 +525,39 @@ function compactJoin(parts: Array<string | undefined>): string | undefined {
 	return present.length > 0 ? present.join("\n\n") : undefined;
 }
 
+/** True only for OMP's generated default system harness.
+ *
+ * Deliberately over-specified. A false positive silently drops a user's real
+ * custom prompt; a false negative only duplicates a harness, which is loud. A
+ * block therefore qualifies only when it opens with a known generation's exact
+ * first bytes, carries that generation's exact `§ Role` sentence, and then holds
+ * every unconditional `§` section in template order. Prose that merely quotes one
+ * OMP sentence never satisfies all three.
+ *
+ * The remaining reachable false positive is a SYSTEM.md / template override that
+ * copies the bundled harness and edits it, so a block rendered from
+ * `custom-system-prompt.md` is rejected outright: that template alone emits the
+ * generated `<project>` container and its own skills preamble, and neither string
+ * exists in `system-prompt.md`. The guard is partial — both containers are
+ * conditional on the agent actually having context files or skills — but it costs
+ * nothing and covers the common case. */
 function isDefaultHarnessBlock(block: string | undefined): boolean {
 	const text = block?.trimStart();
-	return Boolean(text?.startsWith(DEFAULT_HARNESS_MARKER) && text.includes(DEFAULT_HARNESS_ROLE_MARKER));
+	if (!text) return false;
+	if (text.includes(CUSTOM_SKILLS_MARKER) || findGeneratedCustomProject(text)) return false;
+
+	const role = DEFAULT_HARNESS_GENERATIONS.find(
+		(generation) => text.startsWith(generation.opening) && text.includes(`\n§ Role\n${generation.role}\n`),
+	)?.role;
+	if (!role) return false;
+
+	let cursor = text.indexOf(`\n§ Role\n${role}\n`);
+	for (const section of DEFAULT_HARNESS_SECTIONS) {
+		const at = text.indexOf(section, cursor);
+		if (at === -1) return false;
+		cursor = at + section.length;
+	}
+	return true;
 }
 
 function findProjectBlock(assembled: string[]): string | undefined {
@@ -522,6 +646,69 @@ export function extractRenderedSkillsBlock(assembled: string[]): string | undefi
 	return undefined;
 }
 
+/** OMP rule containers rendered inside the generated default harness.
+ *
+ * Custom-system-prompt rules are intentionally not extracted here: that layout
+ * already preserves its rule prose inside `custom`. */
+export function extractRenderedRuleBlocks(assembled: string[]): CapturedRuleBlock[] {
+	const result: CapturedRuleBlock[] = [];
+	const seenIds = new Set<string>();
+
+	for (const block of assembled) {
+		const runtimeStart = block.indexOf("\n§ Runtime\n");
+		if (runtimeStart === -1) continue;
+		const rulesHeading = block.indexOf("# Skills & Rules", runtimeStart);
+		if (rulesHeading === -1) continue;
+		const internalUrls = block.indexOf("\n# Internal URLs", rulesHeading);
+		const sectionEnd = internalUrls === -1 ? block.length : internalUrls;
+
+		// Skill descriptions are user-controlled and rendered before rule containers.
+		// Skip the skills region only when its real generated opener exists; a stray
+		// </skills> inside arbitrary rule prose must never move the parser cursor.
+		let cursor = rulesHeading + "# Skills & Rules".length;
+		const skillsOpen = block.indexOf("<skills>", cursor);
+		if (skillsOpen !== -1 && skillsOpen < sectionEnd) {
+			const skillsClose = block.indexOf("</skills>", skillsOpen + "<skills>".length);
+			if (skillsClose !== -1 && skillsClose < sectionEnd) cursor = skillsClose + "</skills>".length;
+		}
+
+		const push = (kind: "generic" | "domain", openAt: number, open: string, close: string): void => {
+			const closeAt = block.indexOf(close, openAt + open.length);
+			if (closeAt === -1 || closeAt >= sectionEnd) return;
+			const content = block.slice(openAt, closeAt + close.length).trim();
+			cursor = closeAt + close.length;
+			const id = `${kind}:${content}`;
+			if (seenIds.has(id)) return;
+			seenIds.add(id);
+			const portable =
+				kind === "domain"
+					? `Rules are local constraints. You MUST read \`rule://<name>\` when working in that domain.\n${content}`
+					: content;
+			result.push({ id, content: portable });
+		};
+
+		// Generated order is generic first, domain second. Only accept a generic
+		// opener that appears before the generated domain opener; this prevents
+		// XML-like text inside a domain-rule description from impersonating the
+		// missing generic container.
+		const genericOpenAt = block.indexOf(GENERIC_RULES_OPEN, cursor);
+		const firstDomainOpenAt = block.indexOf(DOMAIN_RULES_OPEN, cursor);
+		if (
+			genericOpenAt !== -1
+			&& genericOpenAt < sectionEnd
+			&& (firstDomainOpenAt === -1 || genericOpenAt < firstDomainOpenAt)
+		) {
+			push("generic", genericOpenAt, GENERIC_RULES_OPEN, GENERIC_RULES_CLOSE);
+		}
+
+		const domainOpenAt = block.indexOf(DOMAIN_RULES_OPEN, cursor);
+		if (domainOpenAt !== -1 && domainOpenAt < sectionEnd) {
+			push("domain", domainOpenAt, DOMAIN_RULES_OPEN, DOMAIN_RULES_CLOSE);
+		}
+	}
+	return result;
+}
+
 /** The subagent role/context/plan block from an assembled prompt array, or
  * undefined for a main-agent prompt that has no such block. */
 export function extractSubagentBlock(assembled: string[]): string | undefined {
@@ -584,6 +771,9 @@ export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
 	const subagent = extractSubagentBlock(assembled);
 	const contextFiles = extractRenderedContextFiles(assembled);
 	const skillsBlock = extractRenderedSkillsBlock(assembled);
+	// Only the generated default harness owns these tagged containers. A genuine
+	// custom prompt may quote the same XML-like strings and must stay byte-faithful.
+	const rules = isDefaultHarnessBlock(assembled[0]) ? extractRenderedRuleBlocks([assembled[0]!]) : [];
 
 	return {
 		custom: compactJoin([customPrompt, subagent]),
@@ -593,5 +783,6 @@ export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
 		append: customPrompt ? undefined : extractDefaultAppendBlock(assembled),
 		contextFiles,
 		skills: skillsBlock ? [{ id: "omp-skills", content: skillsBlock }] : [],
+		rules,
 	};
 }

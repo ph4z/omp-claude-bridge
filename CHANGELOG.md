@@ -30,6 +30,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Fixed
+- OMP's generated default system harness being forwarded on top of Claude Code's
+  own `claude_code` preset on OMP >= 18.2.7. `src/prompt-capture.ts` recognized
+  the generated block 0 by a literal `<conventions>` opening plus the role
+  sentence `Helpful, trusted assistant for load-bearing changes …`. OMP 18.2.7
+  rewrote the top of `prompts/system/system-prompt.md`: the `<conventions>`
+  wrapper is gone (the RFC 2119 line now opens the block) and the role sentence
+  became `You are a helpful, trusted assistant working in Oh My Pi coding
+  harness.` Neither marker matched, so `extractCustomPromptBlock()` treated the
+  whole generated harness as portable custom text — a real 18.2.8 turn projected
+  an 18320-char append behind a 19171-char assembled prompt, duplicating OMP's
+  harness — and, because the default append is only read from the PROJECT tail
+  when block 0 is *not* custom, the user's `--append-system-prompt` /
+  `APPEND_SYSTEM.md` text was dropped entirely. Recognition is now a small table
+  of known harness generations (opening line + `§ Role` sentence) combined with
+  the ordered spine of unconditional `§` sections (`§ Runtime`, `§ Tool Policy`,
+  `§ Workflow`, `§ Delivery`, `§ Critical`), which has been stable since v17.2.15.
+  Requiring all of them keeps a user's own prompt out of the harness class even
+  when it quotes OMP prose. Verified against real renderings from OMP v18.2.8 and
+  against the v18.2.2/v18.2.6 layout; the same turn now projects 402 chars of
+  context + skills + append and no harness. A block rendered from
+  `custom-system-prompt.md` is rejected outright, so a `SYSTEM.md` that pastes a
+  copy of the bundled harness keeps its own additions. The generated default
+  harness's `<generic-rules>` and `<domain-rules>` containers are captured as
+  portable rule blocks before the harness is stripped, projected after skills,
+  and deduplicated across prompt inheritance; this preserves always-apply rule
+  bodies and the domain-rule catalogue instead of losing them on OMP >= 18.2.7.
+  Domain-rule projection also carries OMP's `rule://<name>` loading instruction,
+  so the catalogue retains its intended lookup semantics.
+  Rule extraction is gated on a recognized default harness, so a genuine custom
+  prompt that happens to use the same XML-like tags remains byte-faithful.
+  Releases up to v18.1.20, which opened with `<system-conventions>`, are still
+  unrecognized — that generation never matched the previous marker either.
 - `prompt-capture: no capture for this N-char system prompt, and it embeds none
   of the 0 known` on OMP 18.2.8 automatic continuations (notably the todo
   completion reminder). Two lifecycle facts combined: OMP emits
