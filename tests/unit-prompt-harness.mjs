@@ -70,6 +70,64 @@ for (const generation of ["18.2.8", "18.2.6"]) {
 	});
 }
 
+test("user-authored rule text inside the harness block does not defeat recognition", () => {
+	// `<generic-rules>` carries verbatim `.omp/rules/*.md` bodies, so arbitrary user
+	// prose lands inside an otherwise generated block 0. Recognition must survive it.
+	//
+	// FOLLOW-UP: those rule bodies are dropped with the harness — the bridge has no
+	// portable field for rules on any OMP version, so projecting them is a separate
+	// change, not part of harness recognition.
+	const assembled = [
+		defaultHarnessBlock({
+			generation: "18.2.8",
+			skills: ["- bridge: SKILL-RULES"],
+			alwaysApplyRules: ["§ Delivery is my favourite section.", "RFC 2119: MUST, REQUIRED — quoted by a rule."],
+			domainRules: ["- house (src/**): the house style."],
+		}),
+		projectBlock("RULES"),
+	];
+
+	assert.equal(deriveCaptureInput(assembled).custom, undefined);
+	const projected = project(assembled);
+	assert.ok(!projected.includes(HARNESS_SENTINEL));
+	assert.equal(count(projected, "CONTEXT-RULES"), 1);
+	assert.equal(count(projected, "SKILL-RULES"), 1);
+	assert.equal(count(projected, "APPEND-RULES"), 1);
+});
+
+test("a custom prompt that pastes the bundled harness stays portable", () => {
+	// custom-system-prompt.md renders customPrompt first, so a SYSTEM.md holding a
+	// copy of the harness reproduces every positive anchor. Its own generated
+	// containers — which system-prompt.md never emits — are what rejects it.
+	const pasted = [
+		defaultHarnessBlock({ generation: "18.2.8" }),
+		"HOUSE-RULE-MUST-SURVIVE: ship with a changelog entry.",
+		"",
+		"<project>",
+		"## Context",
+		"<instructions>",
+		'<file path="/repo/AGENTS.md">',
+		"CONTEXT-PASTED",
+		"</file>",
+		"</instructions>",
+		"</project>",
+		"Skills are specialized knowledge. Scan descriptions for your task domain.",
+		"<skills>",
+		'<skill name="bridge">',
+		"SKILL-PASTED",
+		"</skill>",
+		"</skills>",
+	].join("\n");
+
+	const assembled = [pasted, projectBlock("PASTED")];
+	assert.ok(deriveCaptureInput(assembled).custom?.includes("HOUSE-RULE-MUST-SURVIVE"));
+
+	const projected = project(assembled);
+	assert.equal(count(projected, "HOUSE-RULE-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "CONTEXT-PASTED"), 1);
+	assert.equal(count(projected, "SKILL-PASTED"), 1);
+});
+
 test("a subagent turn projects its assignment without the generated base harness", () => {
 	const subagent = [
 		"§ Role",

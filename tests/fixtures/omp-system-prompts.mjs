@@ -37,10 +37,14 @@ export const HARNESS_SENTINEL = "- Correctness first; then maintainability 6 mon
 /**
  * Block 0 of a default-layout assembled prompt.
  *
- * `skills` are rendered catalogue lines (`- name: description`); an empty list
- * omits the catalogue exactly as `{{#if skills.length}}` does upstream.
+ * `skills` are rendered catalogue lines (`- name: description`);
+ * `alwaysApplyRules` are verbatim rule-file bodies and `domainRules` rendered
+ * `- name (globs): description` lines. An empty list omits its container exactly
+ * as the matching `{{#if ….length}}` does upstream. The rule containers sit after
+ * `</skills>` inside `§ Runtime`, which is where user-authored text can appear in
+ * an otherwise generated block.
  */
-export function defaultHarnessBlock({ generation = "18.2.8", skills = [] } = {}) {
+export function defaultHarnessBlock({ generation = "18.2.8", skills = [], alwaysApplyRules = [], domainRules = [] } = {}) {
 	const spec = GENERATIONS[generation];
 	if (!spec) throw new Error(`unknown harness generation ${generation}`);
 	return [
@@ -57,6 +61,8 @@ export function defaultHarnessBlock({ generation = "18.2.8", skills = [] } = {})
 		...(skills.length > 0
 			? ["Matching skill → MUST read `skill://<name>` first.", "<skills>", ...skills, "</skills>"]
 			: []),
+		...(alwaysApplyRules.length > 0 ? ["", "<generic-rules>", ...alwaysApplyRules, "</generic-rules>"] : []),
+		...(domainRules.length > 0 ? ["", "<domain-rules>", ...domainRules, "</domain-rules>"] : []),
 		"",
 		"# Internal URLs",
 		"Most FS/bash tools auto-resolve these to FS paths.",

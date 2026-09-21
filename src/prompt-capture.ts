@@ -476,10 +476,20 @@ function compactJoin(parts: Array<string | undefined>): string | undefined {
  * block therefore qualifies only when it opens with a known generation's exact
  * first bytes, carries that generation's exact `§ Role` sentence, and then holds
  * every unconditional `§` section in template order. Prose that merely quotes one
- * OMP sentence never satisfies all three. */
+ * OMP sentence never satisfies all three.
+ *
+ * The remaining reachable false positive is a SYSTEM.md / template override that
+ * copies the bundled harness and edits it, so a block rendered from
+ * `custom-system-prompt.md` is rejected outright: that template alone emits the
+ * generated `<project>` container and its own skills preamble, and neither string
+ * exists in `system-prompt.md`. The guard is partial — both containers are
+ * conditional on the agent actually having context files or skills — but it costs
+ * nothing and covers the common case. */
 function isDefaultHarnessBlock(block: string | undefined): boolean {
 	const text = block?.trimStart();
 	if (!text) return false;
+	if (text.includes(CUSTOM_SKILLS_MARKER) || findGeneratedCustomProject(text)) return false;
+
 	const role = DEFAULT_HARNESS_GENERATIONS.find(
 		(generation) => text.startsWith(generation.opening) && text.includes(`\n§ Role\n${generation.role}\n`),
 	)?.role;

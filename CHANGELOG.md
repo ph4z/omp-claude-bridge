@@ -49,9 +49,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Requiring all of them keeps a user's own prompt out of the harness class even
   when it quotes OMP prose. Verified against real renderings from OMP v18.2.8 and
   against the v18.2.2/v18.2.6 layout; the same turn now projects 402 chars of
-  context + skills + append and no harness. Releases up to v18.1.20, which opened
-  with `<system-conventions>`, are still unrecognized — that generation never
-  matched the previous marker either.
+  context + skills + append and no harness. A block rendered from
+  `custom-system-prompt.md` is rejected outright, so a `SYSTEM.md` that pastes a
+  copy of the bundled harness keeps its own additions. Releases up to v18.1.20,
+  which opened with `<system-conventions>`, are still unrecognized — that
+  generation never matched the previous marker either. Known gap, unchanged by
+  this release and pre-existing on every layout the bridge recognized: the
+  `<generic-rules>`/`<domain-rules>` containers OMP renders inside the harness
+  block are dropped with it, so always-apply rule bodies are not projected. On
+  OMP >= 18.2.7 they did reach the model as a side effect of the misclassification
+  fixed here; projecting them needs a portable rules field the bridge does not
+  have yet.
 - `prompt-capture: no capture for this N-char system prompt, and it embeds none
   of the 0 known` on OMP 18.2.8 automatic continuations (notably the todo
   completion reminder). Two lifecycle facts combined: OMP emits
