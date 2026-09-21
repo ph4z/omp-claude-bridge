@@ -3,9 +3,8 @@
 // The harness is non-portable: Claude Code's `claude_code` preset already carries
 // an equivalent base harness, so block 0 of a default-layout prompt must never
 // reach `capture.custom`. When recognition breaks, the whole OMP harness is
-// forwarded as the projected append and the default append prompt is lost with
-// it (`deriveCaptureInput` reads append from the PROJECT tail only when block 0
-// is not custom). Both failure modes are asserted here.
+// forwarded as the projected append. That failure mode is asserted here;
+// append placement across the three layouts lives in unit-prompt-append.mjs.
 
 import assert from "node:assert/strict";
 import test from "node:test";

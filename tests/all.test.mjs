@@ -4,6 +4,7 @@ import "./unit-askclaude-thinking.mjs";
 import "./unit-context-window.mjs";
 import "./unit-debug-reasoning.mjs";
 import "./unit-model-discovery.mjs";
+import "./unit-prompt-append.mjs";
 import "./unit-prompt-capture.mjs";
 import "./unit-prompt-harness.mjs";
 import "./unit-prompt-lifecycle.mjs";

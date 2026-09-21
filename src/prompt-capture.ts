@@ -457,13 +457,24 @@ export function releaseSharedPromptCaptures(
 // files that differ from a fresh discovery pass. Derivation therefore reads the
 // exact rendered array OMP is about to send.
 //
-// Two OMP layouts matter:
+// Three OMP layouts matter (v18.2.8 `system-prompt.ts` selects block 0 and the
+// PROJECT footer's data from one flag, `resolvedCustomPrompt`):
 // - default prompt: generated harness in block 0, project/context + append in a
 //   PROJECT block, and a subagent role/context block when applicable;
-// - custom prompt: block 0 is itself user/project-specific content (custom +
-//   append + rendered context/skills/rules), not the default OMP harness.
+// - literal custom prompt (SYSTEM.md / --system-prompt): block 0 is itself
+//   user/project-specific content (custom + append + rendered
+//   context/skills/rules), not the default OMP harness, and OMP deliberately
+//   blanks the footer's contextFiles/appendPrompt so neither is emitted twice;
+// - custom template (SYSTEM_TEMPLATE.md / --system-prompt-template): block 0 is
+//   the user's rendered Handlebars template, but `resolvedCustomPrompt` stays
+//   undefined, so the PROJECT footer keeps rendering the real contextFiles and
+//   appendPrompt.
 //
-// For the custom layout we keep the non-generated remainder of block 0 as a
+// Block 0 being portable therefore does NOT imply it owns the append; only the
+// literal-custom route folds the append into it. Derivation reads the append
+// from the rendered PROJECT footer instead of inferring it from block 0.
+//
+// For both custom layouts we keep the non-generated remainder of block 0 as a
 // single portable custom block because OMP exposes no provenance that would let
 // us split customPrompt from appendSystemPrompt losslessly.
 
@@ -560,8 +571,22 @@ function isDefaultHarnessBlock(block: string | undefined): boolean {
 	return true;
 }
 
+/** OMP's generated project/environment footer.
+ *
+ * Two upstream invariants keep a user-authored block from impersonating it,
+ * which matters because the footer's tail is where the append is read from:
+ * - it is never block 0. v18.2.8 `system-prompt.ts` builds the array as
+ *   `const systemPrompt = [rendered]` and only then pushes the footer, so index
+ *   0 is always the rendered custom/template/harness block;
+ * - it always renders project-prompt.md's unconditional `<critical>` block.
+ * A SYSTEM.md that opens with a `PROJECT` heading and quotes that block would
+ * otherwise shadow the real footer and get its own trailing text projected as
+ * an append on top of the copy already inside `custom`.
+ */
 function findProjectBlock(assembled: string[]): string | undefined {
-	return assembled.find((part) => part.trimStart().startsWith(`${PROJECT_BLOCK_PREFIX}\n`));
+	return assembled
+		.slice(1)
+		.find((part) => part.trimStart().startsWith(`${PROJECT_BLOCK_PREFIX}\n`) && part.includes(PROJECT_CRITICAL_MARKER));
 }
 
 function removeRange(source: string, start: number, end: number): string {
@@ -716,12 +741,24 @@ export function extractSubagentBlock(assembled: string[]): string | undefined {
 	return block ? block.trim() : undefined;
 }
 
-/** The append text from OMP's default project-prompt.md.
+/** The append text OMP rendered into the PROJECT footer, if any.
  *
- * In the default layout, project-prompt.md ends its generated content at the
- * stable </critical> block and renders appendPrompt immediately afterwards.
+ * project-prompt.md ends its generated content at the stable </critical> block
+ * and renders `appendPrompt` immediately afterwards, so the footer tail answers
+ * the only question that matters here: did THIS assembly put an append in the
+ * PROJECT block? That is a property of the rendered output, so no customization
+ * route or OMP version is inferred. It does still recognize project-prompt.md's
+ * rendered bytes: should upstream reword the generated <critical> block, this
+ * returns undefined and the append is lost again. That marker has been stable
+ * across the supported generations and is already the anchor the default layout
+ * depended on, so the fix adds no new brittleness — but it is not marker-free.
+ *
+ * OMP v18.2.8 `system-prompt.ts` renders the footer with
+ * `{ ...data, contextFiles: [], appendPrompt: "" }` whenever a literal custom
+ * prompt is in play, so on the plain SYSTEM.md / --system-prompt route this
+ * tail is empty and the function correctly reports no append.
  */
-export function extractDefaultAppendBlock(assembled: string[]): string | undefined {
+export function extractProjectAppendBlock(assembled: string[]): string | undefined {
 	const project = findProjectBlock(assembled);
 	if (!project) return undefined;
 	const generatedStart = project.indexOf(PROJECT_CRITICAL_MARKER);
@@ -777,10 +814,19 @@ export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
 
 	return {
 		custom: compactJoin([customPrompt, subagent]),
-		// Default OMP layout exposes appendPrompt at the tail of project-prompt.md.
-		// Custom layout already carries it inside customPrompt because OMP 18.2.2
-		// does not expose the boundary between custom and append text.
-		append: customPrompt ? undefined : extractDefaultAppendBlock(assembled),
+		// Read the append from wherever OMP actually rendered it rather than
+		// inferring it from the presence of a custom block 0. The two are not
+		// equivalent: OMP folds appendPrompt into block 0 only on the literal
+		// custom routes (SYSTEM.md / --system-prompt), and blanks the footer's
+		// appendPrompt in exactly that case. A SYSTEM_TEMPLATE.md /
+		// --system-prompt-template render also produces a portable block 0, but
+		// keeps its append in the PROJECT footer — so the old
+		// `customPrompt ? undefined` guard silently dropped it.
+		//
+		// Asking the rendered footer keeps every route correct without sniffing
+		// which customization produced it: the plain-custom footer has no append
+		// to find, so this cannot duplicate the copy living inside `custom`.
+		append: extractProjectAppendBlock(assembled),
 		contextFiles,
 		skills: skillsBlock ? [{ id: "omp-skills", content: skillsBlock }] : [],
 		rules,

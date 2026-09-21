@@ -230,11 +230,15 @@ OMP 18.2.2 exposes only the fully-assembled `systemPrompt` string array to exten
 `before_agent_start` keyed by the prompt itself ([`src/prompt-capture.ts`](src/prompt-capture.ts)).
 Portable data is derived from the **rendered array itself**, not re-discovered from
 `process.cwd()`: this preserves the exact context files OMP supplied to a subagent or
-worktree, plus the default-layout append block and the rendered skills catalogue. When
-OMP uses a custom system prompt, 18.2.2 no longer exposes the boundary between
-`customPrompt` and `appendSystemPrompt`; the bridge therefore preserves that combined
-user/project block losslessly while removing generated project/skills containers and
-re-projecting those once.
+worktree, plus the rendered skills catalogue and whatever append text OMP actually put
+in the project/environment footer. Which block owns the append depends on the layout:
+`SYSTEM.md` / `--system-prompt` folds it into block 0 (and OMP blanks the footer's copy),
+while `SYSTEM_TEMPLATE.md` / `--system-prompt-template` leaves block 0 as the rendered
+template and keeps the append in the footer. The bridge reads the footer as rendered
+instead of assuming a custom block owns its append. For both custom layouts 18.2.2+
+exposes no boundary between `customPrompt` and `appendSystemPrompt`, so that combined
+user/project block is preserved losslessly while generated project/skills containers are
+removed and re-projected once.
 
 The provider then resolves its received prompt against those captures. Subagent prompt
 **inheritance is projected rather than recursively copied**: when a prompt embeds a

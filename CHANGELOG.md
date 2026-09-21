@@ -30,6 +30,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Fixed
+- User append instructions (`APPEND_SYSTEM.md` / `--append-system-prompt`) being
+  silently dropped whenever OMP rendered block 0 from `SYSTEM_TEMPLATE.md` or
+  `--system-prompt-template`. `deriveCaptureInput()` read the append from the
+  PROJECT footer only when block 0 was *not* portable custom text, on the
+  assumption that any custom block already carries its own append. That holds
+  only for the literal routes: OMP v18.2.8 `system-prompt.ts` folds
+  `appendPrompt` into block 0 via `custom-system-prompt.md` — and blanks the
+  footer's `contextFiles`/`appendPrompt` — only when `resolvedCustomPrompt` is
+  set, which the template routes leave undefined. A rendered template is
+  therefore portable custom text *and* keeps its append in the PROJECT footer,
+  so the bridge captured the template but no append, and Claude Code never saw
+  the user's instructions. The append is now read from the rendered PROJECT
+  footer on every layout, following OMP's actual output structure instead of
+  inferring append ownership from block 0. Plain `SYSTEM.md` cannot duplicate:
+  its footer tail is empty by construction, so the extractor finds nothing to
+  add beside the copy already inside `custom`. No content-based deduplication is
+  performed — a template that intentionally renders `{{appendPrompt}}` itself
+  keeps both copies OMP emitted.
 - OMP's generated default system harness being forwarded on top of Claude Code's
   own `claude_code` preset on OMP >= 18.2.7. `src/prompt-capture.ts` recognized
   the generated block 0 by a literal `<conventions>` opening plus the role
