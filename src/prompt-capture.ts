@@ -665,7 +665,11 @@ export function extractRenderedRuleBlocks(assembled: string[]): CapturedRuleBloc
 			const id = `${kind}:${content}`;
 			if (seenIds.has(id)) continue;
 			seenIds.add(id);
-			result.push({ id, content });
+			const portable =
+				kind === "domain"
+					? `Rules are local constraints. You MUST read \`rule://<name>\` when working in that domain.\n${content}`
+					: content;
+			result.push({ id, content: portable });
 		}
 	}
 	return result;
