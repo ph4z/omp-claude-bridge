@@ -653,24 +653,41 @@ export function extractRenderedSkillsBlock(assembled: string[]): string | undefi
 export function extractRenderedRuleBlocks(assembled: string[]): CapturedRuleBlock[] {
 	const result: CapturedRuleBlock[] = [];
 	const seenIds = new Set<string>();
-	const specs = [
-		["generic", GENERIC_RULES_OPEN, GENERIC_RULES_CLOSE],
-		["domain", DOMAIN_RULES_OPEN, DOMAIN_RULES_CLOSE],
-	] as const;
 
 	for (const block of assembled) {
-		for (const [kind, open, close] of specs) {
-			const content = extractTaggedContainer(block, open, close)?.trim();
-			if (!content) continue;
+		const runtimeStart = block.indexOf("\n§ Runtime\n");
+		if (runtimeStart === -1) continue;
+		const rulesHeading = block.indexOf("# Skills & Rules", runtimeStart);
+		if (rulesHeading === -1) continue;
+		const internalUrls = block.indexOf("\n# Internal URLs", rulesHeading);
+		const sectionEnd = internalUrls === -1 ? block.length : internalUrls;
+
+		// Skill descriptions are user-controlled and rendered before rule containers.
+		// Start after the generated </skills> when present so XML-like text inside a
+		// skill description cannot masquerade as a rule container.
+		let cursor = rulesHeading + "# Skills & Rules".length;
+		const skillsClose = block.indexOf("</skills>", cursor);
+		if (skillsClose !== -1 && skillsClose < sectionEnd) cursor = skillsClose + "</skills>".length;
+
+		const capture = (kind: "generic" | "domain", open: string, close: string): void => {
+			const openAt = block.indexOf(open, cursor);
+			if (openAt === -1 || openAt >= sectionEnd) return;
+			const closeAt = block.indexOf(close, openAt + open.length);
+			if (closeAt === -1 || closeAt >= sectionEnd) return;
+			const content = block.slice(openAt, closeAt + close.length).trim();
+			cursor = closeAt + close.length;
 			const id = `${kind}:${content}`;
-			if (seenIds.has(id)) continue;
+			if (seenIds.has(id)) return;
 			seenIds.add(id);
 			const portable =
 				kind === "domain"
 					? `Rules are local constraints. You MUST read \`rule://<name>\` when working in that domain.\n${content}`
 					: content;
 			result.push({ id, content: portable });
-		}
+		};
+
+		capture("generic", GENERIC_RULES_OPEN, GENERIC_RULES_CLOSE);
+		capture("domain", DOMAIN_RULES_OPEN, DOMAIN_RULES_CLOSE);
 	}
 	return result;
 }
