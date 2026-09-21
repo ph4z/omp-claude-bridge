@@ -158,6 +158,46 @@ test("plain SYSTEM.md whose text merely resembles a footer tail stays single-cop
 	assert.equal(count(projected, "APPEND-QUOTED-SENTINEL"), 1);
 });
 
+test("a SYSTEM.md that impersonates the generated footer cannot inject an append", () => {
+	// Sharper version of the case above, and the one the removed guard used to
+	// mask: a SYSTEM.md that both opens with a `PROJECT` heading and quotes
+	// project-prompt.md's generated <critical> block would shadow the real
+	// footer, and its own trailing text would be lifted out of block 0 and
+	// projected a second time. Upstream never places the footer at index 0, so
+	// footer lookup skips block 0 and demands the generated marker.
+	const spoof = [
+		"PROJECT",
+		"",
+		"House notes for this repo.",
+		"",
+		"<critical>",
+		"- Each response MUST advance the task; completion only stopping condition.",
+		"</critical>",
+		"TRAILING-BLOCK0-SENTINEL",
+	].join("\n");
+	const assembled = [customPromptBlock({ custom: spoof, append: "APPEND-SPOOF-SENTINEL" }), projectBlock()];
+
+	const input = deriveCaptureInput(assembled);
+	assert.equal(input.append, undefined, "block 0 text must never be lifted out as the PROJECT append");
+
+	const projected = project(assembled);
+	assert.equal(count(projected, "TRAILING-BLOCK0-SENTINEL"), 1);
+	assert.equal(count(projected, "APPEND-SPOOF-SENTINEL"), 1);
+});
+
+test("the real footer is still found when an extra block follows it", () => {
+	// OMP appends further generated blocks (computer safety, nested-repo context)
+	// after the footer; the append must still be read from the footer itself.
+	const assembled = [
+		"TEMPLATE-TRAILING-SENTINEL",
+		projectBlock({ append: "APPEND-TRAILING-SENTINEL" }),
+		"<computer-safety>\ngenerated safety guidance\n</computer-safety>",
+	];
+
+	assert.equal(deriveCaptureInput(assembled).append, "APPEND-TRAILING-SENTINEL");
+	assert.equal(count(project(assembled), "APPEND-TRAILING-SENTINEL"), 1);
+});
+
 // --- A. default bundled harness --------------------------------------------
 
 test("default harness: the PROJECT append still projects exactly once", () => {

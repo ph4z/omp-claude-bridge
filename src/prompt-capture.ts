@@ -571,8 +571,22 @@ function isDefaultHarnessBlock(block: string | undefined): boolean {
 	return true;
 }
 
+/** OMP's generated project/environment footer.
+ *
+ * Two upstream invariants keep a user-authored block from impersonating it,
+ * which matters because the footer's tail is where the append is read from:
+ * - it is never block 0. v18.2.8 `system-prompt.ts` builds the array as
+ *   `const systemPrompt = [rendered]` and only then pushes the footer, so index
+ *   0 is always the rendered custom/template/harness block;
+ * - it always renders project-prompt.md's unconditional `<critical>` block.
+ * A SYSTEM.md that opens with a `PROJECT` heading and quotes that block would
+ * otherwise shadow the real footer and get its own trailing text projected as
+ * an append on top of the copy already inside `custom`.
+ */
 function findProjectBlock(assembled: string[]): string | undefined {
-	return assembled.find((part) => part.trimStart().startsWith(`${PROJECT_BLOCK_PREFIX}\n`));
+	return assembled
+		.slice(1)
+		.find((part) => part.trimStart().startsWith(`${PROJECT_BLOCK_PREFIX}\n`) && part.includes(PROJECT_CRITICAL_MARKER));
 }
 
 function removeRange(source: string, start: number, end: number): string {
