@@ -393,11 +393,12 @@ export function releaseSharedPromptCaptures(
 	return true;
 }
 
-// --- OMP 18.2.2 assembled-array derivation ---------------------------------
+// --- Assembled-array derivation --------------------------------------------
 //
-// OMP 18.2.2 exposes only the final `systemPrompt: string[]` at
-// before_agent_start. It does NOT expose the structured customPrompt,
-// appendSystemPrompt, contextFiles, or skills that built it.
+// `before_agent_start` exposes only the final `systemPrompt: string[]` — still
+// true at OMP v18.2.8 (`extensibility/extensions/types.ts BeforeAgentStartEvent`).
+// It does NOT expose the structured customPrompt, appendSystemPrompt,
+// contextFiles, or skills that built it.
 //
 // Re-reading those inputs from disk is incorrect: a subagent can run in a
 // different cwd/worktree and createAgentSession can supply preloaded context
@@ -411,15 +412,52 @@ export function releaseSharedPromptCaptures(
 //   append + rendered context/skills/rules), not the default OMP harness.
 //
 // For the custom layout we keep the non-generated remainder of block 0 as a
-// single portable custom block because OMP 18.2.2 no longer exposes provenance
-// that would let us split customPrompt from appendSystemPrompt losslessly.
+// single portable custom block because OMP exposes no provenance that would let
+// us split customPrompt from appendSystemPrompt losslessly.
 
 /** Verbatim line unique to `subagent-system-prompt.md`; marks the array entry
  * that holds a subagent's role, assignment context, and plan. */
 export const SUBAGENT_BLOCK_MARKER = "You are operating on a piece of work assigned to you by the main agent.";
 
-const DEFAULT_HARNESS_MARKER = "<conventions>";
-const DEFAULT_HARNESS_ROLE_MARKER = "§ Role\nHelpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.";
+// OMP's bundled default harness (`packages/coding-agent/src/prompts/system/system-prompt.md`)
+// is generated, non-portable content: Claude Code's `claude_code` preset already
+// carries an equivalent base harness, so block 0 of a default-layout prompt must
+// be recognized and dropped rather than forwarded as portable custom text.
+//
+// Upstream reshaped the opening of that template twice, so recognition is a small
+// table of generations instead of one marker (verified against can1357/oh-my-pi):
+// - v18.2.7 and later (checked at v18.2.7, v18.2.8): no wrapper element; the RFC
+//   2119 line opens the block and the role sentence gained "You are a".
+// - v18.1.21 … v18.2.6 (checked at v18.2.2, v18.2.6): a `<conventions>` wrapper
+//   precedes the RFC 2119 line, role sentence "Helpful, trusted assistant for
+//   load-bearing changes …".
+// Releases up to v18.1.20 opened with `<system-conventions>`; that generation is
+// not recognized here and never was.
+interface DefaultHarnessGeneration {
+	/** Exact opening bytes of the rendered block. */
+	opening: string;
+	/** Exact sentence rendered under the `§ Role` heading. */
+	role: string;
+}
+
+const DEFAULT_HARNESS_GENERATIONS: readonly DefaultHarnessGeneration[] = [
+	{
+		opening: "RFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+		role: "You are a helpful, trusted assistant working in Oh My Pi coding harness.",
+	},
+	{
+		opening: "<conventions>\nRFC 2119: MUST, REQUIRED, SHOULD, RECOMMENDED, MAY, OPTIONAL.",
+		role: "Helpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.",
+	},
+];
+
+/** The `§` sections every supported generation renders unconditionally, in
+ *  template order. Unchanged since v17.2.15 — far more stable than the opening
+ *  and role lines above — which is why the structural verdict rests on them.
+ *  `§ Scratchpad` is excluded: it is gated on the `think` tool, so including it
+ *  would make the verdict depend on an agent's tool set. */
+const DEFAULT_HARNESS_SECTIONS = ["\n§ Runtime\n", "\n§ Tool Policy\n", "\n§ Workflow\n", "\n§ Delivery\n", "\n§ Critical\n"];
+
 const DEFAULT_SKILLS_MARKER = "Matching skill → MUST read `skill://<name>` first.";
 const CUSTOM_SKILLS_MARKER = "Skills are specialized knowledge. Scan descriptions for your task domain.";
 const LEGACY_SKILLS_MARKER = "The following skills provide specialized instructions for specific tasks.";
@@ -431,9 +469,29 @@ function compactJoin(parts: Array<string | undefined>): string | undefined {
 	return present.length > 0 ? present.join("\n\n") : undefined;
 }
 
+/** True only for OMP's generated default system harness.
+ *
+ * Deliberately over-specified. A false positive silently drops a user's real
+ * custom prompt; a false negative only duplicates a harness, which is loud. A
+ * block therefore qualifies only when it opens with a known generation's exact
+ * first bytes, carries that generation's exact `§ Role` sentence, and then holds
+ * every unconditional `§` section in template order. Prose that merely quotes one
+ * OMP sentence never satisfies all three. */
 function isDefaultHarnessBlock(block: string | undefined): boolean {
 	const text = block?.trimStart();
-	return Boolean(text?.startsWith(DEFAULT_HARNESS_MARKER) && text.includes(DEFAULT_HARNESS_ROLE_MARKER));
+	if (!text) return false;
+	const role = DEFAULT_HARNESS_GENERATIONS.find(
+		(generation) => text.startsWith(generation.opening) && text.includes(`\n§ Role\n${generation.role}\n`),
+	)?.role;
+	if (!role) return false;
+
+	let cursor = text.indexOf(`\n§ Role\n${role}\n`);
+	for (const section of DEFAULT_HARNESS_SECTIONS) {
+		const at = text.indexOf(section, cursor);
+		if (at === -1) return false;
+		cursor = at + section.length;
+	}
+	return true;
 }
 
 function findProjectBlock(assembled: string[]): string | undefined {

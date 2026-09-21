@@ -9,6 +9,7 @@ import {
 	releaseSharedPromptCaptures,
 	SUBAGENT_BLOCK_MARKER,
 } from "../src/prompt-capture.ts";
+import { defaultHarnessBlock, HARNESS_SENTINEL } from "./fixtures/omp-system-prompts.mjs";
 
 const count = (haystack, needle) => haystack.split(needle).length - 1;
 
@@ -57,21 +58,7 @@ test("2. real OMP default layout preserves task.context, append, skills, and ren
 
 	// Mirrors the relevant OMP 18.2.2 template boundaries:
 	// system-prompt.md → subagent-system-prompt.md → project-prompt.md.
-	const harness = [
-		"<conventions>",
-		"OMP-HARNESS-MUST-NOT-BE-APPENDED",
-		"</conventions>",
-		"",
-		"§ Role",
-		"Helpful, trusted assistant for load-bearing changes in Oh My Pi coding harness.",
-		"",
-		"§ Runtime",
-		"# Skills & Rules",
-		"Matching skill → MUST read `skill://<name>` first.",
-		"<skills>",
-		"- bridge: BRIDGE-SKILL-MUST-SURVIVE",
-		"</skills>",
-	].join("\n");
+	const harness = defaultHarnessBlock({ generation: "18.2.6", skills: ["- bridge: BRIDGE-SKILL-MUST-SURVIVE"] });
 	const project = [
 		"PROJECT",
 		"",
@@ -108,7 +95,7 @@ test("2. real OMP default layout preserves task.context, append, skills, and ren
 	assert.ok(projected.includes('<project_instructions path="/worktree/root/AGENTS.md">'));
 	assert.ok(projected.includes('<project_instructions path="/worktree/root/pkg/AGENTS.md">'));
 	assert.ok(projected.includes("PRIOR PHASE RESULTS:"));
-	assert.ok(!projected.includes("OMP-HARNESS-MUST-NOT-BE-APPENDED"));
+	assert.ok(!projected.includes(HARNESS_SENTINEL));
 });
 
 test("3. parent → child inheritance projects portable parent parts, not raw harness", () => {
