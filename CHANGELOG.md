@@ -30,6 +30,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remap), so model-specific `max`/`xhigh` fallbacks are preserved.
 
 ### Fixed
+- `prompt-capture: no capture for this N-char system prompt, and it embeds none
+  of the 0 known` on OMP 18.2.8 automatic continuations (notably the todo
+  completion reminder). Two lifecycle facts combined: OMP emits
+  `before_agent_start` only from `AgentSession#prepareAgentStart()`, so
+  `TodoTracker.checkCompletion()` → `scheduleAgentContinue({source:
+  "todo-reminder"})` → `#runAgentContinue()` → `agent.continue()` reaches the
+  provider with the agent loop's `cwd` but no fresh capture; and OMP re-binds a
+  single extension module evaluation for subagent sessions
+  (`preloadedPreparedExtensions`), so the parent session and every subagent
+  shared one `streamSimple` object. The bridge keyed provider-stream ownership
+  on that object's identity, so the first subagent `session_shutdown` passed the
+  ownership check and cleared the process-global prompt-capture registry while
+  the parent turn was still running — leaving the continuation with `0 known`
+  captures and failing the turn closed. Ownership is now a count of bound
+  sessions: shared state is released only when the last one shuts down. The
+  capture registry is also resolved through the process global per use instead
+  of being snapshotted at module evaluation, so a module instance can no longer
+  keep recording into a registry that has been unpublished.
 - OMP-native tools reaching a `claude-bridge` turn. The bridge exposes OMP's
   tools through an in-process MCP server, and the Claude Agent SDK renders that
   server's `tools/list` with its own bundled Zod (4.4.3) while the schemas are

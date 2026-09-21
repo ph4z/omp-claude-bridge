@@ -78,12 +78,12 @@
 		}
 	},
 	"devDependencies": {
-		"@oh-my-pi/pi-agent-core": "18.2.6",
-		"@oh-my-pi/pi-ai": "18.2.6",
-		"@oh-my-pi/pi-catalog": "18.2.6",
-		"@oh-my-pi/pi-coding-agent": "18.2.6",
-		"@oh-my-pi/pi-tui": "18.2.6",
-		"@oh-my-pi/pi-utils": "18.2.6",
+		"@oh-my-pi/pi-agent-core": "18.2.8",
+		"@oh-my-pi/pi-ai": "18.2.8",
+		"@oh-my-pi/pi-catalog": "18.2.8",
+		"@oh-my-pi/pi-coding-agent": "18.2.8",
+		"@oh-my-pi/pi-tui": "18.2.8",
+		"@oh-my-pi/pi-utils": "18.2.8",
 		"@types/node": "^24.13.2",
 		"tsx": "^4.22.4",
 		"typescript": "^6.0.3",

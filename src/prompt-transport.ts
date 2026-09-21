@@ -18,9 +18,19 @@ export type ProviderPromptTransport =
 /**
  * Resolve how one provider call should transport its system prompt to Claude Code.
  *
- * Normal OMP coding-agent turns always carry a cwd through agent-loop and are
- * expected to have traversed before_agent_start. They therefore MUST resolve
- * through PromptCaptures; a miss remains fail-closed.
+ * Normal OMP coding-agent turns always carry a cwd through agent-loop. A *fresh*
+ * turn traverses before_agent_start immediately before its first provider call,
+ * so its prompt is captured. Later calls in the same turn — the tool loop, and
+ * OMP 18.2.8 automatic continuations such as the todo reminder's
+ * `scheduleAgentContinue` → `agent.continue()` — reuse that same established
+ * prompt without emitting before_agent_start again. They therefore still MUST
+ * resolve through PromptCaptures, and a miss remains fail-closed: an
+ * unaccountable prompt on a cwd-bearing call means the portable OMP material
+ * would be silently dropped.
+ *
+ * Keeping the capture reachable for the whole life of a turn is the registry's
+ * job, not this function's — see provider-registration.ts, where shared state
+ * is released only once the last bound session shuts down.
  *
  * OMP also invokes providers directly through completeSimple() for utility/side
  * requests such as auto-thinking. Those calls do not traverse

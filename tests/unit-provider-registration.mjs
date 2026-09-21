@@ -37,8 +37,49 @@ test("every session registers while child sessions reuse the first streamSimple"
 	assert.equal(registrations[1].config.streamSimple, parentStream);
 	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], parentStream);
 
-	assert.equal(releaseSharedProvider(childStream, globalState), false);
+	assert.equal(releaseSharedProvider(globalState), false);
 	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], parentStream);
-	assert.equal(releaseSharedProvider(parentStream, globalState), true);
+	assert.equal(releaseSharedProvider(globalState), true);
 	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], undefined);
+});
+
+test("sessions sharing one module instance each hold their own claim on the registration", () => {
+	// OMP re-binds an already-imported extension factory for subagent sessions,
+	// so the parent and every subagent register the identical streamSimple.
+	const globalState = {};
+	const streamSimple = () => "shared";
+	const register = () =>
+		registerSharedProvider({
+			providerId: "claude-bridge",
+			streamSimple,
+			config: { apiKey: "not-used", api: "claude-bridge" },
+			registerProvider: () => {},
+			globalState,
+		});
+
+	register();
+	register();
+
+	assert.equal(
+		releaseSharedProvider(globalState),
+		false,
+		"a subagent leaving must not release state the parent still uses",
+	);
+	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], streamSimple);
+	assert.equal(releaseSharedProvider(globalState), true);
+	assert.equal(globalState[ACTIVE_STREAM_SIMPLE_KEY], undefined);
+});
+
+test("an extra shutdown after the last session cannot re-release", () => {
+	const globalState = {};
+	registerSharedProvider({
+		providerId: "claude-bridge",
+		streamSimple: () => "only",
+		config: { apiKey: "not-used", api: "claude-bridge" },
+		registerProvider: () => {},
+		globalState,
+	});
+
+	assert.equal(releaseSharedProvider(globalState), true);
+	assert.equal(releaseSharedProvider(globalState), false);
 });
