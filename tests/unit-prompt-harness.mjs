@@ -53,19 +53,29 @@ function project(assembled) {
 for (const generation of ["18.2.8", "18.2.6"]) {
 	test(`OMP ${generation} default harness is stripped while its portable parts project once`, () => {
 		const assembled = [
-			defaultHarnessBlock({ generation, skills: [`- bridge: SKILL-${generation}`] }),
+			defaultHarnessBlock({
+				generation,
+				skills: [`- bridge: SKILL-${generation}`],
+				alwaysApplyRules: [`GENERIC-RULE-${generation}: always follow this.`],
+				domainRules: [`- domain-${generation} (src/**): DOMAIN-RULE-${generation}`],
+			}),
 			projectBlock(generation),
 		];
 
 		const input = deriveCaptureInput(assembled);
 		assert.equal(input.custom, undefined, "generated harness must not become custom content");
 		assert.equal(input.append, `APPEND-${generation}`);
+		assert.equal(input.rules?.length, 2, "both generated rule containers must be captured");
 
 		const projected = project(assembled);
 		assert.ok(!projected.includes(HARNESS_SENTINEL), "generated harness reached the projected append");
 		assert.ok(!projected.includes("§ Delivery"), "generated harness sections reached the projected append");
 		assert.equal(count(projected, `CONTEXT-${generation}`), 1);
 		assert.equal(count(projected, `SKILL-${generation}`), 1);
+		assert.equal(count(projected, `GENERIC-RULE-${generation}`), 1);
+		assert.equal(count(projected, `DOMAIN-RULE-${generation}`), 1);
+		assert.equal(count(projected, "<generic-rules>"), 1);
+		assert.equal(count(projected, "<domain-rules>"), 1);
 		assert.equal(count(projected, `APPEND-${generation}`), 1);
 	});
 }
@@ -73,10 +83,8 @@ for (const generation of ["18.2.8", "18.2.6"]) {
 test("user-authored rule text inside the harness block does not defeat recognition", () => {
 	// `<generic-rules>` carries verbatim `.omp/rules/*.md` bodies, so arbitrary user
 	// prose lands inside an otherwise generated block 0. Recognition must survive it.
-	//
-	// FOLLOW-UP: those rule bodies are dropped with the harness — the bridge has no
-	// portable field for rules on any OMP version, so projecting them is a separate
-	// change, not part of harness recognition.
+	// The rule containers are portable user/project policy and must be projected
+	// after the generated harness itself is stripped.
 	const assembled = [
 		defaultHarnessBlock({
 			generation: "18.2.8",
@@ -92,7 +100,62 @@ test("user-authored rule text inside the harness block does not defeat recogniti
 	assert.ok(!projected.includes(HARNESS_SENTINEL));
 	assert.equal(count(projected, "CONTEXT-RULES"), 1);
 	assert.equal(count(projected, "SKILL-RULES"), 1);
+	assert.equal(count(projected, "§ Delivery is my favourite section."), 1);
+	assert.equal(count(projected, "RFC 2119: MUST, REQUIRED — quoted by a rule."), 1);
+	assert.equal(count(projected, "- house (src/**): the house style."), 1);
+	assert.equal(count(projected, "<generic-rules>"), 1);
+	assert.equal(count(projected, "<domain-rules>"), 1);
 	assert.equal(count(projected, "APPEND-RULES"), 1);
+});
+
+test("custom prompt text that uses rule-like tags stays custom and is not double-projected", () => {
+	const custom = [
+		"CUSTOM-RULE-WRAPPER-BEFORE",
+		"<generic-rules>",
+		"CUSTOM-TAGGED-RULE-MUST-SURVIVE",
+		"</generic-rules>",
+		"<domain-rules>",
+		"- custom (lib/**): CUSTOM-DOMAIN-RULE-MUST-SURVIVE",
+		"</domain-rules>",
+		"CUSTOM-RULE-WRAPPER-AFTER",
+	].join("\n");
+	const assembled = [custom, projectBlock("CUSTOM-RULE-TAGS")];
+
+	const input = deriveCaptureInput(assembled);
+	assert.equal(input.rules?.length ?? 0, 0, "rule extraction must be scoped to a recognized default harness");
+	assert.ok(input.custom?.includes("CUSTOM-TAGGED-RULE-MUST-SURVIVE"));
+
+	const projected = project(assembled);
+	assert.equal(count(projected, "CUSTOM-TAGGED-RULE-MUST-SURVIVE"), 1);
+	assert.equal(count(projected, "CUSTOM-DOMAIN-RULE-MUST-SURVIVE"), 1);
+});
+
+test("inherited rule blocks project once when parent and child carry the same rendered rules", () => {
+	const parentAssembled = [
+		defaultHarnessBlock({
+			generation: "18.2.8",
+			alwaysApplyRules: ["INHERITED-GENERIC-RULE"],
+			domainRules: ["- inherited (src/**): INHERITED-DOMAIN-RULE"],
+		}),
+		projectBlock("PARENT-RULES"),
+	];
+	const parentKey = parentAssembled.join("\n\n");
+	const captures = new PromptCaptures();
+	const parentInput = deriveCaptureInput(parentAssembled);
+	captures.record(parentKey, parentInput);
+
+	const childKey = `CHILD-BEFORE\n\n${parentKey}\n\nCHILD-AFTER`;
+	captures.record(childKey, {
+		custom: childKey,
+		contextFiles: [],
+		skills: [],
+		rules: parentInput.rules,
+	});
+
+	const projected = projectPromptCapture(captures.resolve(childKey));
+	assert.ok(projected);
+	assert.equal(count(projected, "INHERITED-GENERIC-RULE"), 1);
+	assert.equal(count(projected, "INHERITED-DOMAIN-RULE"), 1);
 });
 
 test("a custom prompt that pastes the bundled harness stays portable", () => {
