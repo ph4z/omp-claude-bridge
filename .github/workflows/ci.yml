@@ -29,6 +29,11 @@ jobs:
       - name: Unit tests
         run: bun run test
 
+      # This suite imports the real OMP 18.2.8 host packages, which import Bun
+      # globals and cannot run under the Node-based unit-test command.
+      - name: OMP host compatibility
+        run: bun test tests/omp-18-compat.test.mjs
+
       # Kept a separate step rather than folded into the unit glob: this is the
       # Zod cross-version compatibility boundary (SDK-bundled 4.4.3 walker vs a
       # newer host Zod), and it should stay visible by name in CI output. Runs
