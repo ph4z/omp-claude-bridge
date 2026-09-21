@@ -74,6 +74,10 @@ for (const generation of ["18.2.8", "18.2.6"]) {
 		assert.equal(count(projected, `SKILL-${generation}`), 1);
 		assert.equal(count(projected, `GENERIC-RULE-${generation}`), 1);
 		assert.equal(count(projected, `DOMAIN-RULE-${generation}`), 1);
+		assert.equal(
+			count(projected, "Rules are local constraints. You MUST read `rule://<name>` when working in that domain."),
+			1,
+		);
 		assert.equal(count(projected, "<generic-rules>"), 1);
 		assert.equal(count(projected, "<domain-rules>"), 1);
 		assert.equal(count(projected, `APPEND-${generation}`), 1);
@@ -103,6 +107,10 @@ test("user-authored rule text inside the harness block does not defeat recogniti
 	assert.equal(count(projected, "§ Delivery is my favourite section."), 1);
 	assert.equal(count(projected, "RFC 2119: MUST, REQUIRED — quoted by a rule."), 1);
 	assert.equal(count(projected, "- house (src/**): the house style."), 1);
+	assert.equal(
+		count(projected, "Rules are local constraints. You MUST read `rule://<name>` when working in that domain."),
+		1,
+	);
 	assert.equal(count(projected, "<generic-rules>"), 1);
 	assert.equal(count(projected, "<domain-rules>"), 1);
 	assert.equal(count(projected, "APPEND-RULES"), 1);
