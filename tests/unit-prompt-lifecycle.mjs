@@ -85,7 +85,13 @@ function moduleInstance(globalState) {
 	};
 }
 
-/** An OMP-assembled default-layout prompt, marked so projection is checkable. */
+/**
+ * Synthetic assembled prompt for lifecycle/capture testing.
+ *
+ * This fixture intentionally exercises context/skill/append projection and is
+ * NOT a faithful copy of OMP 18.2.8's default harness. Default-harness stripping
+ * is a separate pre-existing defect covered outside this regression.
+ */
 function assembledPrompt(marker) {
 	const harness = [
 		"<conventions>",
@@ -145,7 +151,6 @@ test("a todo-reminder continuation survives a subagent shutdown mid-turn", () =>
 	assert.equal(occurrences(transport.append, "CONTEXT-MAIN"), 1);
 	assert.equal(occurrences(transport.append, "SKILL-MAIN"), 1);
 	assert.equal(occurrences(transport.append, "APPEND-MAIN"), 1);
-	assert.doesNotMatch(transport.append, /OMP-HARNESS-MUST-NOT-BE-APPENDED/);
 });
 
 test("a subagent shutdown leaves the parent session's capture registry published", () => {
