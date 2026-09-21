@@ -344,7 +344,7 @@ function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): s
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
 	visiting.add(capture);
 	try {
-		// Skills/context an ancestor already contributes are rendered via the
+		// Skills/rules/context an ancestor already contributes are rendered via the
 		// substituted parent projection inside `custom`; drop them from this node so
 		// inherited material appears exactly once.
 		const inheritedSkillIds = new Set(
@@ -733,7 +733,9 @@ export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
 	const subagent = extractSubagentBlock(assembled);
 	const contextFiles = extractRenderedContextFiles(assembled);
 	const skillsBlock = extractRenderedSkillsBlock(assembled);
-	const rules = extractRenderedRuleBlocks(assembled);
+	// Only the generated default harness owns these tagged containers. A genuine
+	// custom prompt may quote the same XML-like strings and must stay byte-faithful.
+	const rules = isDefaultHarnessBlock(assembled[0]) ? extractRenderedRuleBlocks([assembled[0]!]) : [];
 
 	return {
 		custom: compactJoin([customPrompt, subagent]),
