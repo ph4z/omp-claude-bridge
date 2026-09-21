@@ -3,8 +3,8 @@
 // Claude Code keeps its own `claude_code` preset, which already carries the base
 // coding-agent harness (tool policy, workstation, general guidance). What it does
 // NOT carry is the portable material OMP assembled for THIS agent: project
-// context files (AGENTS.md/CLAUDE.md), the skills block, custom/append prompt
-// text, and — the bug this module fixes — a subagent's `§ Role`/`§ Context`
+// context files (AGENTS.md/CLAUDE.md), the skills/rules blocks, custom/append
+// prompt text, and — the bug this module fixes — a subagent's `§ Role`/`§ Context`
 // block, which is where native `task.context` (e.g. PRIOR_PHASE_RESULTS) lives.
 //
 // The bridge must project ONLY those portable parts behind the preset. Appending
@@ -34,6 +34,13 @@ export interface CapturedSkill {
 	disabled?: boolean;
 }
 
+/** One rendered OMP rules container from the generated default harness.
+ * `id` dedupes byte-identical rule blocks across prompt inheritance. */
+export interface CapturedRuleBlock {
+	id: string;
+	content: string;
+}
+
 /** The portable, structured inputs OMP used to assemble one agent's prompt. */
 export interface PromptCaptureInput {
 	/** Per-agent custom prose. For a subagent this is the `§ Role`/`§ Context`/`§ Plan`
@@ -45,6 +52,8 @@ export interface PromptCaptureInput {
 	contextFiles: Array<{ path: string; content: string }>;
 	/** Skills available to this agent, deduped by `id` on projection. */
 	skills: CapturedSkill[];
+	/** Rendered <generic-rules>/<domain-rules> blocks from OMP's default harness. */
+	rules?: CapturedRuleBlock[];
 }
 
 interface InheritedPrompt {
@@ -94,6 +103,7 @@ export class PromptCaptures {
 			assembledPrompt: systemPrompt,
 			contextFiles: [],
 			skills: [],
+			rules: [],
 			inherited: [],
 		};
 
@@ -101,6 +111,7 @@ export class PromptCaptures {
 		capture.append = input.append;
 		capture.contextFiles = input.contextFiles.map((file) => ({ ...file }));
 		capture.skills = input.skills.map((skill) => ({ ...skill }));
+		capture.rules = (input.rules ?? []).map((rule) => ({ ...rule }));
 		if (!existing || customChanged) {
 			capture.inherited = this.findInheritedPrompts(systemPrompt, input.custom);
 		}
@@ -156,7 +167,7 @@ export class PromptCaptures {
 			throw new Error(
 				`prompt-capture: no capture for this ${systemPrompt.length}-char system prompt, and it embeds none of the ${this.captures.size} known. `
 				+ `Closest known match diverges at offset ${matches[0]?.firstDivergent ?? "?"} (${matches.length ? matches[0].key.length : 0}-char key). `
-				+ `Claude Code would receive none of this turn's context files, skills or custom instructions. `
+				+ `Claude Code would receive none of this turn's context files, skills, rules or custom instructions. `
 				+ `The usual cause is an extension loaded after claude-bridge that rewrites the system prompt from before_agent_start, or OMP rebuilding the prompt outside before_agent_start.`,
 			);
 		}
@@ -274,6 +285,31 @@ export function collectPromptSkills(capture: PromptCapture): CapturedSkill[] {
 	return result;
 }
 
+/** Rule blocks reachable through inherited prompts, ancestor first, once per id. */
+export function collectPromptRules(capture: PromptCapture): CapturedRuleBlock[] {
+	const result: CapturedRuleBlock[] = [];
+	const seenIds = new Set<string>();
+	const visited = new Set<PromptCapture>();
+	const visiting = new Set<PromptCapture>();
+
+	const visit = (node: PromptCapture): void => {
+		if (visited.has(node)) return;
+		if (visiting.has(node)) throw new Error("Cyclic prompt inheritance");
+		visiting.add(node);
+		for (const edge of node.inherited) visit(edge.parent);
+		for (const rule of node.rules ?? []) {
+			if (seenIds.has(rule.id)) continue;
+			seenIds.add(rule.id);
+			result.push(rule);
+		}
+		visiting.delete(node);
+		visited.add(node);
+	};
+
+	visit(capture);
+	return result;
+}
+
 /** Context-file paths reachable through inherited prompts, once each. */
 export function collectPromptContextPaths(capture: PromptCapture): Set<string> {
 	const paths = new Set<string>();
@@ -299,6 +335,11 @@ function renderSkills(skills: CapturedSkill[]): string | undefined {
 	return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
+function renderRules(rules: CapturedRuleBlock[]): string | undefined {
+	const parts = rules.map((rule) => rule.content.trim()).filter((content) => content.length > 0);
+	return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): string | undefined {
 	if (visiting.has(capture)) throw new Error("Cyclic prompt inheritance");
 	visiting.add(capture);
@@ -316,6 +357,16 @@ function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): s
 			return true;
 		});
 
+		const inheritedRuleIds = new Set(
+			capture.inherited.flatMap((edge) => collectPromptRules(edge.parent).map((rule) => rule.id)),
+		);
+		const ownRuleIds = new Set<string>();
+		const ownRules = (capture.rules ?? []).filter((rule) => {
+			if (inheritedRuleIds.has(rule.id) || ownRuleIds.has(rule.id)) return false;
+			ownRuleIds.add(rule.id);
+			return true;
+		});
+
 		const inheritedContextPaths = new Set(
 			capture.inherited.flatMap((edge) => [...collectPromptContextPaths(edge.parent)]),
 		);
@@ -330,6 +381,7 @@ function projectCapture(capture: PromptCapture, visiting: Set<PromptCapture>): s
 		const parts = [
 			formatProjectContext(ownContextFiles),
 			renderSkills(ownSkills),
+			renderRules(ownRules),
 			custom,
 			capture.append,
 		].filter((part): part is string => Boolean(part && part.trim()));
@@ -461,6 +513,10 @@ const DEFAULT_HARNESS_SECTIONS = ["\n§ Runtime\n", "\n§ Tool Policy\n", "\n§ 
 const DEFAULT_SKILLS_MARKER = "Matching skill → MUST read `skill://<name>` first.";
 const CUSTOM_SKILLS_MARKER = "Skills are specialized knowledge. Scan descriptions for your task domain.";
 const LEGACY_SKILLS_MARKER = "The following skills provide specialized instructions for specific tasks.";
+const GENERIC_RULES_OPEN = "<generic-rules>";
+const GENERIC_RULES_CLOSE = "</generic-rules>";
+const DOMAIN_RULES_OPEN = "<domain-rules>";
+const DOMAIN_RULES_CLOSE = "</domain-rules>";
 const PROJECT_BLOCK_PREFIX = "PROJECT";
 const PROJECT_CRITICAL_MARKER = "<critical>\n- Each response MUST advance the task; completion only stopping condition.";
 
@@ -590,6 +646,31 @@ export function extractRenderedSkillsBlock(assembled: string[]): string | undefi
 	return undefined;
 }
 
+/** OMP rule containers rendered inside the generated default harness.
+ *
+ * Custom-system-prompt rules are intentionally not extracted here: that layout
+ * already preserves its rule prose inside `custom`. */
+export function extractRenderedRuleBlocks(assembled: string[]): CapturedRuleBlock[] {
+	const result: CapturedRuleBlock[] = [];
+	const seenIds = new Set<string>();
+	const specs = [
+		["generic", GENERIC_RULES_OPEN, GENERIC_RULES_CLOSE],
+		["domain", DOMAIN_RULES_OPEN, DOMAIN_RULES_CLOSE],
+	] as const;
+
+	for (const block of assembled) {
+		for (const [kind, open, close] of specs) {
+			const content = extractTaggedContainer(block, open, close)?.trim();
+			if (!content) continue;
+			const id = `${kind}:${content}`;
+			if (seenIds.has(id)) continue;
+			seenIds.add(id);
+			result.push({ id, content });
+		}
+	}
+	return result;
+}
+
 /** The subagent role/context/plan block from an assembled prompt array, or
  * undefined for a main-agent prompt that has no such block. */
 export function extractSubagentBlock(assembled: string[]): string | undefined {
@@ -652,6 +733,7 @@ export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
 	const subagent = extractSubagentBlock(assembled);
 	const contextFiles = extractRenderedContextFiles(assembled);
 	const skillsBlock = extractRenderedSkillsBlock(assembled);
+	const rules = extractRenderedRuleBlocks(assembled);
 
 	return {
 		custom: compactJoin([customPrompt, subagent]),
@@ -661,5 +743,6 @@ export function deriveCaptureInput(assembled: string[]): PromptCaptureInput {
 		append: customPrompt ? undefined : extractDefaultAppendBlock(assembled),
 		contextFiles,
 		skills: skillsBlock ? [{ id: "omp-skills", content: skillsBlock }] : [],
+		rules,
 	};
 }
