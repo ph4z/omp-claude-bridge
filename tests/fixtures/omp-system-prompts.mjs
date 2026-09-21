@@ -87,3 +87,72 @@ export function defaultHarnessBlock({ generation = "18.2.8", skills = [], always
 		"</critical>",
 	].join("\n");
 }
+
+/**
+ * The PROJECT block, rendered from `prompts/system/project-prompt.md`.
+ *
+ * Verbatim template order at v18.2.8: `<repo-rules>` holds `contextFiles`, the
+ * generated `<critical>` block closes the generated content, and `appendPrompt`
+ * renders last. OMP passes `{ ...data, contextFiles: [], appendPrompt: "" }` on
+ * the plain-custom route, so omitting both arguments models that layout exactly.
+ */
+export function projectBlock({ contextFiles = [], append } = {}) {
+	return [
+		"PROJECT",
+		"",
+		"<workstation>",
+		"- Platform: linux",
+		"</workstation>",
+		"",
+		...(contextFiles.length > 0
+			? [
+					"<repo-rules>",
+					"MUST follow these context files for all tasks:",
+					...contextFiles.flatMap(({ path, content }) => [`<file path="${path}">`, content, "</file>"]),
+					"</repo-rules>",
+					"",
+				]
+			: []),
+		"<critical>",
+		"- Each response MUST advance the task; completion only stopping condition.",
+		"- MUST default to informed action; do not ask for confirmation when tools or repo context can answer.",
+		"</critical>",
+		...(append ? ["", append] : []),
+	].join("\n");
+}
+
+/**
+ * Block 0 of the plain `SYSTEM.md` / `--system-prompt` layout, rendered from
+ * `prompts/system/custom-system-prompt.md`.
+ *
+ * Template order at v18.2.8: `customPrompt`, then `appendPrompt`, then the
+ * generated `<project>` container, then the skills catalogue. The append is
+ * folded into this block precisely because OMP blanks it in the PROJECT footer.
+ */
+export function customPromptBlock({ custom, append, contextFiles = [], skills = [] } = {}) {
+	return [
+		custom,
+		...(append ? ["", append] : []),
+		...(contextFiles.length > 0
+			? [
+					"",
+					"<project>",
+					"## Context",
+					"<instructions>",
+					...contextFiles.flatMap(({ path, content }) => [`<file path="${path}">`, content, "</file>"]),
+					"</instructions>",
+					"</project>",
+				]
+			: []),
+		...(skills.length > 0
+			? [
+					"",
+					"Skills are specialized knowledge. Scan descriptions for your task domain.",
+					"If a skill applies, you MUST read `skill://<name>` before proceeding.",
+					"<skills>",
+					...skills.flatMap(({ name, description }) => [`<skill name="${name}">`, description, "</skill>"]),
+					"</skills>",
+				]
+			: []),
+	].join("\n");
+}
