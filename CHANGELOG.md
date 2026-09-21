@@ -56,6 +56,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   portable rule blocks before the harness is stripped, projected after skills,
   and deduplicated across prompt inheritance; this preserves always-apply rule
   bodies and the domain-rule catalogue instead of losing them on OMP >= 18.2.7.
+  Domain-rule projection also carries OMP's `rule://<name>` loading instruction,
+  so the catalogue retains its intended lookup semantics.
   Rule extraction is gated on a recognized default harness, so a genuine custom
   prompt that happens to use the same XML-like tags remains byte-faithful.
   Releases up to v18.1.20, which opened with `<system-conventions>`, are still
