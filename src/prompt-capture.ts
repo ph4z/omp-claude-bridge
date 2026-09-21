@@ -663,15 +663,16 @@ export function extractRenderedRuleBlocks(assembled: string[]): CapturedRuleBloc
 		const sectionEnd = internalUrls === -1 ? block.length : internalUrls;
 
 		// Skill descriptions are user-controlled and rendered before rule containers.
-		// Start after the generated </skills> when present so XML-like text inside a
-		// skill description cannot masquerade as a rule container.
+		// Skip the skills region only when its real generated opener exists; a stray
+		// </skills> inside arbitrary rule prose must never move the parser cursor.
 		let cursor = rulesHeading + "# Skills & Rules".length;
-		const skillsClose = block.indexOf("</skills>", cursor);
-		if (skillsClose !== -1 && skillsClose < sectionEnd) cursor = skillsClose + "</skills>".length;
+		const skillsOpen = block.indexOf("<skills>", cursor);
+		if (skillsOpen !== -1 && skillsOpen < sectionEnd) {
+			const skillsClose = block.indexOf("</skills>", skillsOpen + "<skills>".length);
+			if (skillsClose !== -1 && skillsClose < sectionEnd) cursor = skillsClose + "</skills>".length;
+		}
 
-		const capture = (kind: "generic" | "domain", open: string, close: string): void => {
-			const openAt = block.indexOf(open, cursor);
-			if (openAt === -1 || openAt >= sectionEnd) return;
+		const push = (kind: "generic" | "domain", openAt: number, open: string, close: string): void => {
 			const closeAt = block.indexOf(close, openAt + open.length);
 			if (closeAt === -1 || closeAt >= sectionEnd) return;
 			const content = block.slice(openAt, closeAt + close.length).trim();
@@ -686,8 +687,24 @@ export function extractRenderedRuleBlocks(assembled: string[]): CapturedRuleBloc
 			result.push({ id, content: portable });
 		};
 
-		capture("generic", GENERIC_RULES_OPEN, GENERIC_RULES_CLOSE);
-		capture("domain", DOMAIN_RULES_OPEN, DOMAIN_RULES_CLOSE);
+		// Generated order is generic first, domain second. Only accept a generic
+		// opener that appears before the generated domain opener; this prevents
+		// XML-like text inside a domain-rule description from impersonating the
+		// missing generic container.
+		const genericOpenAt = block.indexOf(GENERIC_RULES_OPEN, cursor);
+		const firstDomainOpenAt = block.indexOf(DOMAIN_RULES_OPEN, cursor);
+		if (
+			genericOpenAt !== -1
+			&& genericOpenAt < sectionEnd
+			&& (firstDomainOpenAt === -1 || genericOpenAt < firstDomainOpenAt)
+		) {
+			push("generic", genericOpenAt, GENERIC_RULES_OPEN, GENERIC_RULES_CLOSE);
+		}
+
+		const domainOpenAt = block.indexOf(DOMAIN_RULES_OPEN, cursor);
+		if (domainOpenAt !== -1 && domainOpenAt < sectionEnd) {
+			push("domain", domainOpenAt, DOMAIN_RULES_OPEN, DOMAIN_RULES_CLOSE);
+		}
 	}
 	return result;
 }
