@@ -746,9 +746,12 @@ export function extractSubagentBlock(assembled: string[]): string | undefined {
  * project-prompt.md ends its generated content at the stable </critical> block
  * and renders `appendPrompt` immediately afterwards, so the footer tail answers
  * the only question that matters here: did THIS assembly put an append in the
- * PROJECT block? That is a property of the rendered output, not of which
- * customization route produced it, which is why no layout or version sniffing
- * is involved.
+ * PROJECT block? That is a property of the rendered output, so no customization
+ * route or OMP version is inferred. It does still recognize project-prompt.md's
+ * rendered bytes: should upstream reword the generated <critical> block, this
+ * returns undefined and the append is lost again. That marker has been stable
+ * across the supported generations and is already the anchor the default layout
+ * depended on, so the fix adds no new brittleness — but it is not marker-free.
  *
  * OMP v18.2.8 `system-prompt.ts` renders the footer with
  * `{ ...data, contextFiles: [], appendPrompt: "" }` whenever a literal custom

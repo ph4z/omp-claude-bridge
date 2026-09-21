@@ -185,17 +185,21 @@ test("a SYSTEM.md that impersonates the generated footer cannot inject an append
 	assert.equal(count(projected, "APPEND-SPOOF-SENTINEL"), 1);
 });
 
-test("the real footer is still found when an extra block follows it", () => {
-	// OMP appends further generated blocks (computer safety, nested-repo context)
-	// after the footer; the append must still be read from the footer itself.
+test("the real footer is found wherever OMP places it in the array", () => {
+	// v18.2.8 `system-prompt.ts` builds the array as `[rendered]`, pushes the
+	// computer-safety block BEFORE the footer when the computer tool is enabled,
+	// and pushes active-repo context AFTER it. The footer is therefore not at a
+	// fixed index — only its never-being-index-0 is guaranteed — so the scan must
+	// find it with generated blocks on either side.
 	const assembled = [
-		"TEMPLATE-TRAILING-SENTINEL",
-		projectBlock({ append: "APPEND-TRAILING-SENTINEL" }),
+		"TEMPLATE-SURROUNDED-SENTINEL",
 		"<computer-safety>\ngenerated safety guidance\n</computer-safety>",
+		projectBlock({ append: "APPEND-SURROUNDED-SENTINEL" }),
+		"<active-repo-context>\ngenerated nested-repo context\n</active-repo-context>",
 	];
 
-	assert.equal(deriveCaptureInput(assembled).append, "APPEND-TRAILING-SENTINEL");
-	assert.equal(count(project(assembled), "APPEND-TRAILING-SENTINEL"), 1);
+	assert.equal(deriveCaptureInput(assembled).append, "APPEND-SURROUNDED-SENTINEL");
+	assert.equal(count(project(assembled), "APPEND-SURROUNDED-SENTINEL"), 1);
 });
 
 // --- A. default bundled harness --------------------------------------------
