@@ -1273,7 +1273,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			isReentrant,
 			activeQueryContexts: activeQueryContexts.size,
 			activeQueryExists: queryCtx.activeQuery !== null,
-			sessionSlot.current: sessionSlot.current ? { sessionId: sessionSlot.current.sessionId.slice(0, 8), cursor: sessionSlot.current.cursor } : null,
+			sharedSession: sessionSlot.current ? { sessionId: sessionSlot.current.sessionId.slice(0, 8), cursor: sessionSlot.current.cursor } : null,
 			messageRoles: context.messages.map((m, i) => `[${i}]${m.role}`).join(" "),
 		});
 		// Recover: use a continuation prompt so the SDK doesn't send an empty text block
